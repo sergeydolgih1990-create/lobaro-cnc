@@ -1,0 +1,851 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Смотрелка программ</title>
+<!-- Общий шаблон смотрелки программ ЧПУ (скилл lobaro-cnc-program). Не писать заново: собирать
+     scripts/смотрелка_программ.py; новые функции добавлять сюда и в _data/Lobaro/Справочники/Функции-смотрелок.md.
+     Основа — смотрелка обработки гондолы (съём на карте высот, цвет «сколько осталось до модели», кнопки, G-код),
+     плюс функции смотрелки программ (виды ходов по проверке, строки файла, заходы, болты, вердикт, таймер, скорость). -->
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root {
+    --ground: #e9edee; --panel: #f7f9f9; --ink: #13191c; --muted: #5d6a6f; --line: #c6d0d2; --accent: #1f6f8b;
+    --cur: #fff1c7; --bad: #b3261e;
+    --c-rapid: #d14b3a; --c-wood: #1f5f99; --c-air: #8f9a9e; --c-entry: #2f9a48;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #101618; --panel: #182023; --ink: #e8eded; --muted: #94a3a8; --line: #2b383c; --accent: #5bb2cf;
+      --cur: #3a3522; --bad: #ff8a80;
+      --c-rapid: #ef6f5e; --c-wood: #5ea4e8; --c-air: #6b777b; --c-entry: #5fd17a;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground: #101618; --panel: #182023; --ink: #e8eded; --muted: #94a3a8; --line: #2b383c; --accent: #5bb2cf;
+    --cur: #3a3522; --bad: #ff8a80;
+    --c-rapid: #ef6f5e; --c-wood: #5ea4e8; --c-air: #6b777b; --c-entry: #5fd17a;
+    color-scheme: dark;
+  }
+  html { height: 100%; }
+  [hidden] { display: none !important; }
+  body { margin: 0; background: var(--ground); color: var(--ink);
+         font-family: "IBM Plex Sans", system-ui, "Segoe UI", sans-serif; font-size: 15px; line-height: 1.5; }
+  /* один экран без прокрутки (Сергей, 22.10.2026): сверху — комплект и программы, посередине — сцена на всё
+     оставшееся место, под ней — одна строка проигрывания; ракурс, траектория, показ и сведения — колонкой справа */
+  .app { height: 100vh; height: 100dvh; display: grid; grid-template-columns: minmax(0, 1fr) 300px;
+         grid-template-rows: auto minmax(0, 1fr); gap: 8px 12px; padding: 8px 12px; box-sizing: border-box; }
+  .top { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 6px; }
+  .titlebar { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
+  header h1 { font-size: 17px; font-weight: 600; margin: 0; }
+  .main { display: flex; flex-direction: column; gap: 6px; min-height: 0; }
+  .side { display: flex; flex-direction: column; gap: 10px; min-height: 0; overflow-y: auto; padding-right: 2px; }
+  .side .group { display: flex; flex-direction: column; gap: 4px; }
+  .side .group > .label { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+  .side .row button { padding: 3px 9px; font-size: 13px; }
+  .side .toggles { flex-direction: column; align-items: flex-start; gap: 2px; font-size: 13px; }
+  .sets select { max-width: 22em; padding: 3px 8px; font-size: 13px; }
+  .sets a { font-size: 13px; color: var(--accent); }
+  #progs button { padding: 3px 10px; font-size: 13px; }
+  .bar { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; }
+  .bar button { padding: 3px 10px; }
+  .bar input[type=range] { accent-color: var(--accent); }
+  .bar #slider { flex: 1 1 260px; min-width: 160px; }
+  .bar #speed { flex: 0 1 140px; min-width: 100px; }
+  .verdict { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 13px; padding: 2px 8px; border-radius: 2px;
+             border: 1px solid var(--line); background: var(--panel); color: var(--ink); }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .row .label { font-size: 13px; color: var(--muted); margin-right: 2px; min-width: 76px; }
+  button, select, input[type=number] {
+    font: inherit; font-size: 14px; padding: 6px 12px; border: 1px solid var(--line); border-radius: 3px;
+    background: var(--panel); color: var(--ink); cursor: pointer;
+  }
+  input[type=number] { width: 7.5em; cursor: text; font-family: "IBM Plex Mono", ui-monospace, monospace; }
+  button[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 0 -2px 0 var(--accent); font-weight: 500; }
+  button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  button.big { font-size: 16px; min-width: 44px; }
+  .stage { position: relative; background: var(--panel); border: 1px solid var(--line); border-radius: 3px;
+           flex: 1 1 auto; min-height: 220px; overflow: hidden; }
+  .stage canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+  .gcode { position: absolute; left: 10px; top: 10px; margin: 0; padding: 6px 8px; max-width: min(64ch, 58%);
+           font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 12px; line-height: 1.45;
+           background: color-mix(in srgb, var(--panel) 88%, transparent); border: 1px solid var(--line);
+           border-radius: 3px; white-space: pre; overflow: hidden; }
+  .gcode .cur { background: var(--cur); display: inline-block; min-width: 100%; }
+  .gcode .n { color: var(--muted); }
+  .toolinfo { position: absolute; right: 10px; top: 10px; padding: 6px 10px; font-size: 13px;
+              background: color-mix(in srgb, var(--panel) 88%, transparent); border: 1px solid var(--line);
+              border-radius: 3px; text-align: right; font-variant-numeric: tabular-nums; }
+  .toolinfo b { font-weight: 600; }
+  .busy { position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
+          background: color-mix(in srgb, var(--panel) 70%, transparent); font-size: 16px; }
+  .timer { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 15px; font-weight: 500;
+           font-variant-numeric: tabular-nums; padding: 2px 8px; border: 1px solid var(--line); border-radius: 3px;
+           background: var(--panel); white-space: nowrap; }
+  .timer small { font-size: 12px; font-weight: 400; color: var(--muted); }
+  .speedval { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 14px; font-weight: 500; min-width: 3.2em;
+              font-variant-numeric: tabular-nums; }
+  .toggles { display: flex; gap: 6px 16px; flex-wrap: wrap; font-size: 14px; color: var(--muted); align-items: center; }
+  .toggles .label { font-size: 13px; min-width: 76px; }
+  .toggles label { display: flex; gap: 6px; align-items: center; cursor: pointer; }
+  .legend { display: flex; gap: 6px 14px; flex-wrap: wrap; font-size: 13px; color: var(--muted); align-items: center; }
+  .legend span { display: inline-flex; gap: 6px; align-items: center; }
+  .legend i { width: 18px; height: 10px; border-radius: 1px; display: inline-block; }
+  .legend i.ln { height: 3px; }
+  .facts { display: grid; grid-template-columns: 1fr 1fr; background: var(--panel);
+           border: 1px solid var(--line); border-radius: 3px; overflow: hidden; margin: 0; }
+  .facts div { padding: 5px 9px; box-shadow: 1px 0 0 var(--line), 0 1px 0 var(--line); }
+  .facts dt { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0 0 1px; }
+  .facts dd { margin: 0; font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 13px; font-variant-numeric: tabular-nums; }
+  .bad { color: var(--bad); }
+  .note { color: var(--muted); font-size: 13px; margin: 0; max-width: 90ch; }
+  .note ul { margin: 2px 0 0; padding-left: 20px; }
+  /* узкий экран: колонка справа уходит вниз, сцена с полосой проигрывания — по-прежнему на один экран */
+  @media (max-width: 960px) { .app { height: auto; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto; }
+                              .main { height: calc(100dvh - 16px); } .side { overflow: visible; } }
+  @media (max-width: 640px) { .gcode { display: none; }
+                              .toolinfo { font-size: 11px; left: 8px; right: 8px; top: 8px; text-align: left; } }
+</style>
+
+<div class="app">
+  <header class="top">
+    <div class="titlebar">
+      <h1 id="t-h1">Программы станка</h1>
+      <span class="verdict" id="t-verdict"></span>
+      <div class="row sets" id="sets" role="group" aria-label="Комплект" hidden>
+        <select id="s_item" aria-label="Изделие"></select>
+        <select id="s_setup" aria-label="Установка"></select>
+        <select id="s_ver" aria-label="Версия"></select>
+        <a id="s_check" target="_blank" rel="noopener" hidden>чек-лист</a>
+      </div>
+    </div>
+    <div class="row" id="progs" role="group" aria-label="Программа (фреза)"></div>
+  </header>
+
+  <main class="main">
+    <div class="stage">
+      <canvas id="c"></canvas>
+      <pre class="gcode" id="gcode" aria-label="Строки программы вокруг текущей"></pre>
+      <div class="toolinfo" id="toolinfo"></div>
+      <div class="busy" id="busy">считаю предыдущие программы…</div>
+    </div>
+    <div class="bar" role="group" aria-label="Проигрывание">
+      <button type="button" id="b_start" title="к началу программы">⏮</button>
+      <button type="button" id="b_prev" title="предыдущая программа (фреза)">◀◀</button>
+      <button type="button" id="b_play" title="пуск / пауза">▶</button>
+      <button type="button" id="b_step" title="следующая строка программы">▶|</button>
+      <button type="button" id="b_next" title="следующая программа (фреза)">▶▶</button>
+      <button type="button" id="b_end" title="конец программы — что останется после неё">в конец</button>
+      <input type="range" id="slider" min="0" max="10000" value="0" aria-label="Положение в программе">
+      <span class="timer" id="timer" role="timer">0:00 / 0:00</span>
+      <input type="range" id="speed" min="0" max="1000" step="1" value="290" list="speed-marks"
+             aria-label="Скорость проигрывания" title="скорость: от ×¼ до ×30; ×1 — как на станке по подачам программы (без разгонов)">
+      <datalist id="speed-marks"><option value="0"></option><option value="290"></option><option value="625"></option><option value="1000"></option></datalist>
+      <span class="speedval" id="speed-val">×1</span>
+    </div>
+  </main>
+
+  <aside class="side">
+    <div class="group" role="group" aria-label="Переход к строке">
+      <span class="label">Строка и заходы</span>
+      <div class="row">
+        <input type="number" id="line" min="1" step="1" inputmode="numeric" aria-label="Номер строки файла">
+        <button type="button" id="go">перейти</button>
+        <button type="button" id="b_prev_entry" title="к предыдущему заходу в дерево">◀ заход</button>
+        <button type="button" id="b_next_entry" title="к следующему заходу в дерево">заход ▶</button>
+      </div>
+    </div>
+    <div class="group" role="group" aria-label="Ракурс">
+      <span class="label">Ракурс</span>
+      <div class="row">
+        <button type="button" data-view="34">3/4</button>
+        <button type="button" data-view="top">сверху</button>
+        <button type="button" data-view="side">сбоку</button>
+        <button type="button" data-view="end">с торца</button>
+        <button type="button" data-view="tool">крупно у фрезы</button>
+      </div>
+    </div>
+    <div class="group toggles" role="group" aria-label="Траектория">
+      <span class="label">Траектория</span>
+      <label><input type="checkbox" id="t_ahead"> впереди фрезы</label>
+      <label><input type="checkbox" id="t_pathall"> вся</label>
+      <label><input type="checkbox" id="t_wood"> по дереву</label>
+      <label><input type="checkbox" id="t_entry"> заходы</label>
+      <label><input type="checkbox" id="t_air"> по воздуху</label>
+      <label><input type="checkbox" id="t_rapid"> холостые</label>
+    </div>
+    <div class="group toggles" role="group" aria-label="Показ">
+      <span class="label">Показ</span>
+      <label id="l_colors"><input type="checkbox" id="t_colors"> <span id="t_colors_text">цвет — сколько осталось до модели</span></label>
+      <label><input type="checkbox" id="t_follow"> камера за фрезой</label>
+      <label><input type="checkbox" id="t_auto"> дальше — следующая программа</label>
+      <label><input type="checkbox" id="t_ghost"> фреза полупрозрачная</label>
+      <label><input type="checkbox" id="t_bolts"> болты</label>
+      <label><input type="checkbox" id="t_dims"> размеры</label>
+      <label><input type="checkbox" id="t_spin"> автоповорот</label>
+    </div>
+    <div class="legend" id="legend"></div>
+    <dl class="facts" id="facts"></dl>
+    <div class="note" id="bads"></div>
+    <p class="note" id="t-lead"></p>
+    <p class="note" id="note"></p>
+  </aside>
+</div>
+
+<script src="three.min.js?v=9274bbcec8d9"></script>
+<script>
+(function () {
+  "use strict";
+  var $ = function (id) { return document.getElementById(id); };
+  var ВШИТО = /*ДАННЫЕ*/null;
+  if (ВШИТО) { запуск(ВШИТО); return; }
+
+  // ---------------- сайт: одна страница на все комплекты (Сергей, 22.10.2026) ----------------
+  // каталог.json — список версий комплектов; выбор — в адресе (?изделие=…&установка=…&версия=…), без него — последний
+  function экр0(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+  function заполнить(sel, значения, подписи, выбран) {
+    sel.innerHTML = значения.map(function (v, i) {
+      return '<option value="' + экр0(v) + '"' + (v === выбран ? " selected" : "") + ">" + экр0(подписи ? подписи[i] : v) + "</option>";
+    }).join("");
+  }
+  fetch("каталог.json?v=" + Date.now()).then(function (r) { return r.json(); }).then(function (кат) {
+    var все = кат["версии"] || [];
+    if (!все.length) { $("note").textContent = "На сайте пока нет ни одного комплекта."; return; }
+    все.sort(function (a, b) { return a["время"] < b["время"] ? 1 : -1; });       // новые сверху
+    var пар = new URLSearchParams(location.search);
+    var выбор = все.filter(function (v) {
+      return (!пар.get("изделие") || v["изделие"] === пар.get("изделие")) && (!пар.get("установка") || v["установка"] === пар.get("установка")) &&
+             (!пар.get("версия") || v["версия"] === пар.get("версия"));
+    })[0] || все[0];
+    var изделия = [], установки = [], версии = [];
+    все.forEach(function (v) {
+      if (изделия.indexOf(v["изделие"]) < 0) изделия.push(v["изделие"]);
+      if (v["изделие"] === выбор["изделие"] && установки.indexOf(v["установка"]) < 0) установки.push(v["установка"]);
+      if (v["изделие"] === выбор["изделие"] && v["установка"] === выбор["установка"]) версии.push(v);
+    });
+    заполнить($("s_item"), изделия, null, выбор["изделие"]);
+    заполнить($("s_setup"), установки, null, выбор["установка"]);
+    заполнить($("s_ver"), версии.map(function (v) { return v["версия"]; }),
+              версии.map(function (v) { return v["подпись"] + " · " + v["вердикт"]; }), выбор["версия"]);
+    if (выбор["чек_лист"]) { $("s_check").href = выбор["чек_лист"]; $("s_check").hidden = false; }
+    $("sets").hidden = false;
+    function перейти(изд, уст, вер) {
+      var q = new URLSearchParams(); q.set("изделие", изд); if (уст) q.set("установка", уст); if (вер) q.set("версия", вер);
+      location.search = q.toString();
+    }
+    $("s_item").addEventListener("change", function () { перейти($("s_item").value); });
+    $("s_setup").addEventListener("change", function () { перейти(выбор["изделие"], $("s_setup").value); });
+    $("s_ver").addEventListener("change", function () { перейти(выбор["изделие"], выбор["установка"], $("s_ver").value); });
+    if (!пар.get("изделие")) history.replaceState(null, "", "?" + new URLSearchParams({ "изделие": выбор["изделие"], "установка": выбор["установка"], "версия": выбор["версия"] }).toString());
+    return fetch(выбор["файл"] + "?v=" + выбор["хеш"]).then(function (r) { return r.json(); }).then(запуск);
+  }).catch(function (e) { $("note").textContent = "Каталог или данные не загрузились: " + e; });
+
+  function запуск(Д) {
+  if (!Д || !window.THREE) { $("note").textContent = "Данные или three.js не загрузились."; return; }
+
+  // галочки при каждом открытии и обновлении — как задумано, а не как запомнил браузер;
+  // размеры и автоповорот выключены (Сергей, 27.09.2026)
+  var ГАЛКИ = { t_ahead: true, t_pathall: false, t_wood: true, t_entry: true, t_air: true, t_rapid: true, t_colors: true,
+               t_follow: false, t_auto: true, t_ghost: false, t_bolts: true, t_dims: false, t_spin: false };
+  Object.keys(ГАЛКИ).forEach(function (id) { $(id).checked = ГАЛКИ[id]; });
+
+  var ЕСТЬ_ЦЕЛЬ = !!Д["цель"];
+  var progs = Д["программы"];
+  function чис(v, зн) { return (Math.round(v * Math.pow(10, зн || 1)) / Math.pow(10, зн || 1)).toString().replace(".", ","); }
+  function экр(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+  document.title = "Смотрелка программ — " + (Д["изделие"] || "").split(",")[0];
+  $("t-h1").textContent = "Программы станка — " + (Д["изделие"] || "");
+  $("t-verdict").textContent = "проверка: " + (Д["вердикт"] || "нет") + (Д["дата_проверки"] ? " · " + Д["дата_проверки"] : "");
+  $("t-lead").innerHTML = "Программы по порядку запуска, каждая — на том, что сняли предыдущие" +
+    (Д["до_программ"].length ? " (и до них: " + экр(Д["до_программ"].join(", ")) + ")" : "") + "." +
+    (ЕСТЬ_ЦЕЛЬ ? " Цвет — сколько осталось до " + экр(Д["цель_имя"]) + "." : "");
+  if (ЕСТЬ_ЦЕЛЬ) $("t_colors_text").textContent = "цвет — сколько осталось до " + Д["цель_имя"];
+  else $("l_colors").hidden = true;
+  $("note").textContent = "Сетка смотрелки " + чис(Д["сетка"].RES, 2) + " мм — для глаза; точная проверка — проверка_программ_ЧПУ.py " +
+    "(сетка 0,25 мм, по ней и раскраска ходов). Цвет — с допуском в одну клетку по горизонтали, иначе стенки красятся ложно. " +
+    "Время — по подачам программы, холостые " + чис(Д["холостые_мм_мин"] / 1000) + " м/мин, без разгонов. Номера строк — строки " +
+    "файла, как в PUMOTIX. Z 0 — верх поддона. Болты — шайба и головка, оранжевое кольцо — зона с уводом сверла.";
+
+  // ---------------- распаковка ----------------
+  function b64(s) { var bin = atob(s), u = new Uint8Array(bin.length); for (var i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return u; }
+  function inflate(s) {
+    var st = new Blob([b64(s)]).stream().pipeThrough(new DecompressionStream("deflate"));
+    return new Response(st).arrayBuffer();
+  }
+  var RAPID = Д["холостые_мм_мин"] || 5000;
+  // заход — первый рез после холостого хода (между ними только рабочая подача по воздуху): так фреза входит в дерево
+  // винтом, наклоном или сбоку. Касания чистовой после короткого воздуха — не заходы.
+  function заходы(p) {
+    var out = [], послеХолостого = true;
+    for (var s = 0; s < p.K.length; s++) {
+      var k = p.K[s];
+      if (k === 0) послеХолостого = true;
+      else if (k !== 2 && послеХолостого) { out.push(s); послеХолостого = false; }
+    }
+    return Int32Array.from(out);
+  }
+  function unpackProgram(p) {
+    return Promise.all([inflate(p["точки"]), inflate(p["вид"]), inflate(p["подача"]), inflate(p["строки"]), inflate(p["текст"])]).then(function (r) {
+      var pi = new Int32Array(r[0]), P = new Float32Array(pi.length);
+      for (var i = 0; i < pi.length; i++) P[i] = pi[i] / 1000;
+      p.P = P; p.K = new Uint8Array(r[1]); p.F = new Float32Array(r[2]); p.L = new Uint32Array(r[3]);
+      p.text = new TextDecoder("latin1").decode(r[4]).split(/\r?\n/);
+      var n = p.K.length, D = new Float32Array(n), T = new Float64Array(n + 1);
+      for (var s = 0; s < n; s++) {
+        var a = 3 * s, len = Math.hypot(P[a + 3] - P[a], P[a + 4] - P[a + 1], P[a + 5] - P[a + 2]);
+        D[s] = len / (p.K[s] === 0 ? RAPID : Math.max(p.F[s], 1)) * 60;
+        T[s + 1] = T[s] + D[s];
+      }
+      p.D = D; p.T = T; p.total = T[n];
+      p.заходыСег = заходы(p); p.заходов = p.заходыСег.length;
+    });
+  }
+  // высоты int16 по 0,01 мм; −32768 — воздух (у старта) или «не деталь» (у модели)
+  function unpackMap(s, пусто) {
+    return inflate(s).then(function (buf) {
+      var a = new Int16Array(buf), out = new Float32Array(a.length);
+      for (var i = 0; i < a.length; i++) out[i] = a[i] === -32768 ? пусто : a[i] / 100;
+      return out;
+    });
+  }
+
+  // ---------------- сетка высот и съём (как в смотрелке гондолы) ----------------
+  var G = Д["сетка"], RES = G.RES, GX0 = G.GX0, GY0 = G.GY0, NX = G.NX, NY = G.NY, N = NX * NY;
+  var AIR = -1e9;
+  function cx(i) { return GX0 + (i + 0.5) * RES; }
+  function cy(j) { return GY0 + (j + 0.5) * RES; }
+  var START = null, THI = null, TLO = null;
+  var dirty = { i0: NX, i1: -1, j0: NY, j1: -1 };
+  function markAll() { dirty.i0 = 0; dirty.i1 = NX - 1; dirty.j0 = 0; dirty.j1 = NY - 1; }
+  function stampPoint(H, px, py, pz, r, ball) {
+    var i0 = Math.max(0, Math.floor((px - r - GX0) / RES)), i1 = Math.min(NX - 1, Math.ceil((px + r - GX0) / RES));
+    var j0 = Math.max(0, Math.floor((py - r - GY0) / RES)), j1 = Math.min(NY - 1, Math.ceil((py + r - GY0) / RES));
+    if (i0 > i1 || j0 > j1) return;
+    var rr = r * r, any = false;
+    for (var j = j0; j <= j1; j++) {
+      var dy = GY0 + (j + 0.5) * RES - py, row = j * NX;
+      for (var i = i0; i <= i1; i++) {
+        var dx = GX0 + (i + 0.5) * RES - px, d2 = dx * dx + dy * dy;
+        if (d2 > rr) continue;
+        var z = ball ? pz + r - Math.sqrt(rr - d2) : pz;
+        if (z < H[row + i]) { H[row + i] = z; any = true; }
+      }
+    }
+    if (any) {
+      if (i0 < dirty.i0) dirty.i0 = i0; if (i1 > dirty.i1) dirty.i1 = i1;
+      if (j0 < dirty.j0) dirty.j0 = j0; if (j1 > dirty.j1) dirty.j1 = j1;
+    }
+  }
+  function stampSeg(H, p, s, f0, f1) {
+    var r = p.r, ball = p["радиусная"], step = p["шаг"] || RES / 2;
+    var P = p.P, a = s * 3, b = a + 3;
+    var x0 = P[a], y0 = P[a + 1], z0 = P[a + 2], x1 = P[b], y1 = P[b + 1], z1 = P[b + 2];
+    var L = Math.max(Math.hypot(x1 - x0, y1 - y0), Math.abs(z1 - z0)) * (f1 - f0);
+    var n = Math.max(1, Math.ceil(L / step));
+    for (var k = 0; k <= n; k++) {
+      var t = f0 + (f1 - f0) * k / n;
+      stampPoint(H, x0 + (x1 - x0) * t, y0 + (y1 - y0) * t, z0 + (z1 - z0) * t, r, ball);
+    }
+  }
+  function runProgram(H, p) { for (var s = 0; s < p.D.length; s++) stampSeg(H, p, s, 0, 1); }
+
+  // ---------------- состояние ----------------
+  var progIdx = 0, H = null, snaps = [], КТ = [];
+  var playT = 0, doneSeg = 0, playing = false;
+  function startState(pi) {
+    if (snaps[pi]) return snaps[pi];
+    var S = new Float32Array(pi === 0 ? START : startState(pi - 1));
+    if (pi > 0) runProgram(S, progs[pi - 1]);
+    snaps[pi] = S;
+    return S;
+  }
+  function prog() { return progs[progIdx]; }
+  function segAt(p, t) {
+    var lo = 0, hi = p.D.length;
+    while (lo < hi) { var mid = (lo + hi) >> 1; if (p.T[mid + 1] <= t) lo = mid + 1; else hi = mid; }
+    return Math.min(lo, Math.max(0, p.D.length - 1));
+  }
+  function toolPos(p, t) {
+    var s = segAt(p, t), a = s * 3, b = a + 3, P = p.P;
+    var d = p.D[s], f = d > 0 ? Math.min(1, Math.max(0, (t - p.T[s]) / d)) : 1;
+    return { s: s, f: f, x: P[a] + (P[b] - P[a]) * f, y: P[a + 1] + (P[b + 1] - P[a + 1]) * f, z: P[a + 2] + (P[b + 2] - P[a + 2]) * f };
+  }
+  // назад — с ближайшей контрольной точки текущей программы (копии карты через каждую восьмую часть), а не с начала
+  function seek(t) {
+    var p = prog();
+    t = Math.max(0, Math.min(p.total, t));
+    var q = toolPos(p, t);
+    if (H === null || q.s < doneSeg) {
+      var best = null;
+      КТ.forEach(function (c) { if (c.s <= q.s && (!best || c.s > best.s)) best = c; });
+      if (best) { H = new Float32Array(best.H); doneSeg = best.s; }
+      else { H = new Float32Array(startState(progIdx)); doneSeg = 0; }
+      markAll();
+    }
+    var шагКТ = Math.max(2000, Math.ceil(p.D.length / 8));
+    for (var s = doneSeg; s < q.s; s++) {
+      stampSeg(H, p, s, 0, 1);
+      if ((s + 1) % шагКТ === 0 && !КТ.some(function (c) { return c.s === s + 1; })) КТ.push({ s: s + 1, H: new Float32Array(H) });
+    }
+    doneSeg = q.s;
+    stampSeg(H, p, q.s, 0, q.f);
+    playT = t;
+    return q;
+  }
+
+  // ---------------- сцена ----------------
+  var canvas = $("c");
+  var renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true, alpha: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  var scene = new THREE.Scene();
+  var camera = new THREE.PerspectiveCamera(32, 1, 1, 8000);
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x9aa7ab, 0.65));
+  var key = new THREE.DirectionalLight(0xffffff, 0.85); key.position.set(-200, -300, 450); scene.add(key);
+  var fill = new THREE.DirectionalLight(0xffffff, 0.4); fill.position.set(300, -100, 200); scene.add(fill);
+  var rim = new THREE.DirectionalLight(0xffffff, 0.3); rim.position.set(0, 300, 250); scene.add(rim);
+  var ЦЕНТР = Д["центр"], Р = Д["размер"] || 400;
+
+  // поддон под заготовками
+  var ground = new THREE.Mesh(new THREE.PlaneGeometry(NX * RES + 80, NY * RES + 80),
+    new THREE.MeshStandardMaterial({ color: 0xc9c3b6, roughness: 0.95, transparent: true, opacity: 0.5 }));
+  ground.position.set(GX0 + NX * RES / 2, GY0 + NY * RES / 2, -0.4); scene.add(ground);
+
+  // заготовки — сетка высот; треугольники только там, где есть дерево (воздух деревом не станет)
+  var geo = new THREE.BufferGeometry(), pos = new Float32Array(N * 3), col = new Float32Array(N * 3);
+  var posAttr, colAttr, blankMesh;
+  function buildBlank() {
+    for (var j = 0; j < NY; j++) for (var i = 0; i < NX; i++) { var k = j * NX + i; pos[3 * k] = cx(i); pos[3 * k + 1] = cy(j); }
+    var quads = 0, jj, ii, a0;
+    for (jj = 0; jj < NY - 1; jj++) for (ii = 0; ii < NX - 1; ii++) {
+      a0 = jj * NX + ii;
+      if (START[a0] > AIR || START[a0 + 1] > AIR || START[a0 + NX] > AIR || START[a0 + NX + 1] > AIR) quads++;
+    }
+    var idx = new Uint32Array(quads * 6), q = 0;
+    for (jj = 0; jj < NY - 1; jj++) for (ii = 0; ii < NX - 1; ii++) {
+      a0 = jj * NX + ii;
+      var a1 = a0 + 1, a2 = a0 + NX, a3 = a2 + 1;
+      if (!(START[a0] > AIR || START[a1] > AIR || START[a2] > AIR || START[a3] > AIR)) continue;
+      idx[q++] = a0; idx[q++] = a1; idx[q++] = a3; idx[q++] = a0; idx[q++] = a3; idx[q++] = a2;
+    }
+    geo.setIndex(new THREE.BufferAttribute(idx, 1));
+    posAttr = new THREE.BufferAttribute(pos, 3); colAttr = new THREE.BufferAttribute(col, 3);
+    posAttr.setUsage(THREE.DynamicDrawUsage); colAttr.setUsage(THREE.DynamicDrawUsage);
+    geo.setAttribute("position", posAttr); geo.setAttribute("color", colAttr);
+    blankMesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.85 }));
+    blankMesh.frustumCulled = false;
+    scene.add(blankMesh);
+  }
+
+  var C = {
+    wood: [0.851, 0.765, 0.627], pallet: [0.79, 0.765, 0.714],
+    ok: [0.561, 0.761, 0.490], gouge: [0.247, 0.435, 0.839],
+    y: [0.925, 0.824, 0.298], o: [0.937, 0.604, 0.227], r: [0.784, 0.275, 0.227]
+  };
+  function mix(a, b, t) { return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]; }
+  function colorFor(h, thi, tlo) {
+    if (isNaN(thi)) return C.wood;
+    if (h < tlo - 0.05) return C.gouge;
+    var d = h - thi;
+    if (d <= 0.05) return C.ok;
+    if (d <= 0.3) return C.y;
+    if (d <= 1.0) return mix(C.y, C.o, (d - 0.3) / 0.7);
+    return mix(C.o, C.r, Math.min(1, (d - 1.0) / 2.0));
+  }
+  var выгрузка = { j0: NY, j1: -1 };       // строки сетки, которые надо отдать видеокарте до следующего кадра
+  function refreshMesh() {
+    if (dirty.i1 < 0) return;
+    var colors = ЕСТЬ_ЦЕЛЬ && $("t_colors").checked;
+    var j0 = Math.max(0, dirty.j0 - 1), j1 = Math.min(NY - 1, dirty.j1 + 1);
+    var i0 = Math.max(0, dirty.i0 - 1), i1 = Math.min(NX - 1, dirty.i1 + 1);
+    for (var j = j0; j <= j1; j++) for (var i = i0; i <= i1; i++) {
+      var k = j * NX + i, h = H[k];
+      pos[3 * k + 2] = h < -1e8 ? 0 : h;
+      var c = h < -1e8 ? C.pallet : (colors ? colorFor(h, THI[k], TLO[k]) : C.wood);
+      col[3 * k] = c[0]; col[3 * k + 1] = c[1]; col[3 * k + 2] = c[2];
+    }
+    if (j0 < выгрузка.j0) выгрузка.j0 = j0; if (j1 > выгрузка.j1) выгрузка.j1 = j1;
+    dirty.i0 = NX; dirty.i1 = -1; dirty.j0 = NY; dirty.j1 = -1;
+  }
+  function выгрузить() {
+    if (выгрузка.j1 < 0) return;
+    var off = выгрузка.j0 * NX * 3, cnt = (выгрузка.j1 - выгрузка.j0 + 1) * NX * 3;
+    posAttr.updateRange.offset = off; posAttr.updateRange.count = cnt; posAttr.needsUpdate = true;
+    colAttr.updateRange.offset = off; colAttr.updateRange.count = cnt; colAttr.needsUpdate = true;
+    выгрузка.j0 = NY; выгрузка.j1 = -1;
+  }
+
+  // фреза: режущая часть своим диаметром и формой, выше — хвостовик
+  var tool = new THREE.Group(); scene.add(tool);
+  var metal = new THREE.MeshStandardMaterial({ color: 0x9aa4ab, metalness: 0.55, roughness: 0.35, transparent: true, opacity: 1 });
+  var flute = new THREE.MeshStandardMaterial({ color: 0xd9b23a, metalness: 0.45, roughness: 0.35, transparent: true, opacity: 1 });
+  function cyl(r, h, z, mat) {
+    var m = new THREE.Mesh(new THREE.CylinderGeometry(r, r, h, 32), mat);
+    m.rotation.x = Math.PI / 2; m.position.z = z + h / 2; tool.add(m);
+  }
+  function buildTool(p) {
+    while (tool.children.length) { var c = tool.children.pop(); c.geometry.dispose(); }
+    var r = p.r, Lc = p.Lc;
+    if (p["радиусная"]) {
+      var sph = new THREE.Mesh(new THREE.SphereGeometry(r, 32, 16), flute); sph.position.z = r; tool.add(sph);
+      cyl(r, Lc - r, r, flute);
+    } else cyl(r, Lc, 0, flute);
+    cyl(r, 30, Lc, metal);
+    setGhost();
+  }
+  function setGhost() {
+    var op = $("t_ghost").checked ? 0.35 : 1;
+    metal.opacity = op; flute.opacity = op; metal.depthWrite = op === 1; flute.depthWrite = op === 1;
+  }
+
+  // траектория: по виду отдельный набор отрезков (вид — из модели съёма общей проверки);
+  // «впереди фрезы» — ближайшие AHEAD отрезков от текущего, «вся» — вся программа
+  function цвет(v) { return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); }
+  var ВИДЫ = [{ id: "t_rapid", css: "--c-rapid", имя: "холостой" }, { id: "t_wood", css: "--c-wood", имя: "рабочий по дереву" },
+              { id: "t_air", css: "--c-air", имя: "рабочий по воздуху" }, { id: "t_entry", css: "--c-entry", имя: "заход в дерево" }];
+  var pathGroup = new THREE.Group(); scene.add(pathGroup);
+  var наборы = [], AHEAD = 1500;
+  function buildPath(p) {
+    while (pathGroup.children.length) { var c = pathGroup.children.pop(); c.geometry.dispose(); c.material.dispose(); }
+    наборы = [];
+    var n = p.K.length;
+    for (var v = 0; v < 4; v++) {
+      var cnt = 0, s;
+      for (s = 0; s < n; s++) if (p.K[s] === v) cnt++;
+      var инд = new Int32Array(cnt), vv = new Float32Array(cnt * 6), k = 0;
+      for (s = 0; s < n; s++) if (p.K[s] === v) { инд[k] = s; vv.set(p.P.subarray(3 * s, 3 * s + 6), 6 * k); k++; }
+      var g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.BufferAttribute(vv, 3));
+      var m = new THREE.LineBasicMaterial({ color: new THREE.Color(цвет(ВИДЫ[v].css)), transparent: v === 2, opacity: v === 2 ? 0.6 : 1 });
+      var L = new THREE.LineSegments(g, m); L.frustumCulled = false; pathGroup.add(L);
+      наборы.push({ линия: L, инд: инд });
+    }
+  }
+  function нижняя(инд, x) { var lo = 0, hi = инд.length; while (lo < hi) { var m = (lo + hi) >> 1; if (инд[m] < x) lo = m + 1; else hi = m; } return lo; }
+  function updatePath(s) {
+    var все = $("t_pathall").checked, вперёд = $("t_ahead").checked;
+    наборы.forEach(function (н, v) {
+      н.линия.visible = $(ВИДЫ[v].id).checked && (все || вперёд);
+      if (все) н.линия.geometry.setDrawRange(0, н.инд.length * 2);
+      else { var a = нижняя(н.инд, s), b = нижняя(н.инд, s + AHEAD); н.линия.geometry.setDrawRange(a * 2, (b - a) * 2); }
+    });
+  }
+
+  // болты: шайба, головка, кольцо зоны с уводом сверла
+  var болты = new THREE.Group(); scene.add(болты);
+  var шайбаМат = new THREE.MeshStandardMaterial({ color: 0x8c949a, metalness: 0.6, roughness: 0.4 });
+  var головкаМат = new THREE.MeshStandardMaterial({ color: 0x3c4246, metalness: 0.5, roughness: 0.5 });
+  var кольцоМат = new THREE.LineBasicMaterial({ color: 0xe08a1e });
+  var БОЛТ = Д["болт"];
+  function buildBolts(p) {
+    while (болты.children.length) { var o = болты.children.pop(); o.geometry.dispose(); }
+    p["крепёж"].forEach(function (к) {
+      var x = к[0], y = к[1], z = к[2], ув = к[3];
+      var ш = new THREE.Mesh(new THREE.CylinderGeometry(БОЛТ["шайба_r"], БОЛТ["шайба_r"], БОЛТ["шайба_h"], 32), шайбаМат);
+      ш.rotation.x = Math.PI / 2; ш.position.set(x, y, z + БОЛТ["шайба_h"] / 2); болты.add(ш);
+      var г = new THREE.Mesh(new THREE.CylinderGeometry(БОЛТ["головка_r"], БОЛТ["головка_r"], БОЛТ["головка_h"], 6), головкаМат);
+      г.rotation.x = Math.PI / 2; г.position.set(x, y, z + БОЛТ["шайба_h"] + БОЛТ["головка_h"] / 2); болты.add(г);
+      var R = БОЛТ["шайба_r"] + ув, pts = [];
+      for (var a = 0; a <= 64; a++) { var u = a / 64 * Math.PI * 2; pts.push(new THREE.Vector3(x + R * Math.cos(u), y + R * Math.sin(u), z + 0.05)); }
+      болты.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), кольцоМат));
+    });
+    болты.visible = $("t_bolts").checked;
+  }
+
+  // размеры заготовок — только галочкой
+  var размеры = new THREE.Group(); scene.add(размеры);
+  function надпись(текст) {
+    var c = document.createElement("canvas"), g = c.getContext("2d"); c.width = 512; c.height = 96;
+    g.font = "500 44px 'IBM Plex Mono', monospace"; g.fillStyle = "rgba(255,255,255,0.86)"; g.fillRect(0, 0, 512, 96);
+    g.fillStyle = "#13191c"; g.textAlign = "center"; g.textBaseline = "middle"; g.fillText(текст, 256, 50);
+    var s = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), depthTest: false }));
+    s.scale.set(64, 12, 1); return s;
+  }
+  Д["заготовки"].forEach(function (з) {
+    var s = надпись(чис(з.x[1] - з.x[0]) + " × " + чис(з.y[1] - з.y[0]) + " × " + чис(з["верх"]));
+    s.position.set((з.x[0] + з.x[1]) / 2, (з.y[0] + з.y[1]) / 2, з["верх"] + 14); размеры.add(s);
+  });
+  размеры.visible = false;
+
+  // ---------------- интерфейс ----------------
+  function fmt(t) {
+    t = Math.max(0, Math.round(t)); var h = Math.floor(t / 3600), m = Math.floor(t % 3600 / 60), s = t % 60;
+    return (h ? h + ":" + (m < 10 ? "0" : "") : "") + m + ":" + (s < 10 ? "0" : "") + s;
+  }
+  function фрезаТекст(p) { return "Ø" + чис(p.d, 3) + (p["радиусная"] ? " радиусная" : " торцевая"); }
+  var всегоЦепочки = 0;
+  function buildProgButtons() {
+    var row = $("progs");
+    progs.forEach(function (p, i) {
+      var b = document.createElement("button"); b.type = "button";
+      b.textContent = p["кратко"] + " · " + чис(p.total / 60) + " мин";
+      b.title = p["имя"];
+      b.addEventListener("click", function () { selectProg(i, true); }); row.appendChild(b);
+    });
+  }
+  function pressButtons() {
+    Array.prototype.forEach.call($("progs").querySelectorAll("button"), function (b, i) { b.setAttribute("aria-pressed", i === progIdx ? "true" : "false"); });
+  }
+  function busy(on) { $("busy").style.display = on ? "flex" : "none"; }
+  function тяжело(fn) { busy(true); setTimeout(function () { fn(); busy(false); }, 20); }
+  function buildLegend() {
+    var out = [];
+    if (ЕСТЬ_ЦЕЛЬ) {
+      out.push(["#c8463a", "осталось больше 1 мм"], ["#ef9a3a", "0,3–1 мм"], ["#ecd24c", "0,05–0,3 мм"],
+               ["#8fc27d", "как у модели (±0,05)"], ["#3f6fd6", "снято глубже модели"]);
+      if (Д["есть_отход"]) out.push(["#d9c3a0", "отход (не деталь)"]);
+    }
+    var html = out.map(function (x) { return '<span><i style="background:' + x[0] + '"></i>' + x[1] + "</span>"; }).join("");
+    html += ВИДЫ.map(function (v) { return '<span><i class="ln" style="background:var(' + v.css + ')"></i>' + v.имя + "</span>"; }).join("");
+    $("legend").innerHTML = html;
+  }
+  function showBads(p) {
+    var b = p["беды"] || [], z = p["заметки"] || [], есть = p["съём"] != null;
+    var html = b.length ? '<span class="bad">Проверка — брак: ' + b.map(экр).join("; ") + "</span>" :
+      (есть ? "Проверка: брака нет." : '<span class="bad">Проверки этих файлов нет — смотреть как непроверенное.</span>');
+    if (z.length) html += "<ul>" + z.map(function (x) { return "<li>" + экр(x) + "</li>"; }).join("") + "</ul>";
+    $("bads").innerHTML = html;
+  }
+  function selectProg(i, resetTime, toEnd, пуск) {
+    playing = false; $("b_play").textContent = "▶";
+    тяжело(function () {
+      progIdx = i; H = null; doneSeg = 0; КТ = [];
+      var p = prog();
+      buildTool(p); buildPath(p); buildBolts(p); showBads(p);
+      seek(toEnd ? p.total : (resetTime ? 0 : playT));
+      markAll(); refreshMesh(); pressButtons(); updateInfo();
+      if (пуск) { playing = true; $("b_play").textContent = "❚❚"; last = null; }
+    });
+  }
+  function updateInfo() {
+    var p = prog(), q = toolPos(p, playT);
+    tool.position.set(q.x, q.y, q.z);
+    updatePath(q.s);
+    $("slider").value = p.total > 0 ? Math.round(playT / p.total * 10000) : 0;
+    $("timer").innerHTML = fmt(playT) + " / " + fmt(p.total) + " <small>осталось " + fmt(p.total - playT) + "</small>";
+    var k = p.K[q.s], стр = p.L[q.s];
+    $("toolinfo").innerHTML = "<b>" + фрезаТекст(p) + "</b> · " + экр(p["кратко"]) +
+      "<br>X " + q.x.toFixed(2) + "  Y " + q.y.toFixed(2) + "  Z " + q.z.toFixed(2) +
+      "<br>строка " + стр + " · " + ВИДЫ[k].имя + (k === 0 ? "" : ", F" + Math.round(p.F[q.s]));
+    var out = [], w = String(p["строк"]).length;
+    for (var n = Math.max(1, стр - 4); n <= Math.min(p.text.length, стр + 4); n++) {
+      var t = '<span class="n">' + String(n).padStart(w, " ") + "</span>  " + экр(p.text[n - 1]);
+      out.push(n === стр ? '<span class="cur">' + t + "</span>" : t);
+    }
+    $("gcode").innerHTML = out.join("\n");
+    var пв = p["по_видам"];
+    var facts = [["программа", (progIdx + 1) + " из " + progs.length], ["фреза", фрезаТекст(p)],
+                 ["время программы", fmt(p.total)], ["вся цепочка", fmt(всегоЦепочки)],
+                 ["строка", стр + " из " + p["строк"]], ["подача", k === 0 ? "холостой" : Math.round(p.F[q.s]) + " мм/мин"],
+                 ["вылет из гайки", p["вылет"] != null ? "≥ " + Math.ceil(p["вылет"]) + " мм" : "—"],
+                 ["съём за ход", p["съём"] != null ? "≤ " + чис(p["съём"]) + " мм" : "—"],
+                 ["заходов после холостого", p.заходов]];
+    if (пв) facts.push(["дерево · воздух · холост., мин", чис(пв["по_дереву_мин"]) + " · " + чис(пв["по_воздуху_мин"]) + " · " + чис(пв["холостые_мин"])]);
+    $("facts").innerHTML = facts.map(function (x) { return "<div><dt>" + x[0] + "</dt><dd>" + x[1] + "</dd></div>"; }).join("");
+  }
+  function к(t) { seek(t); refreshMesh(); updateInfo(); }
+
+  $("b_play").addEventListener("click", function () {
+    var p = prog();
+    if (!playing && playT >= p.total - 1e-6) к(0);
+    playing = !playing; $("b_play").textContent = playing ? "❚❚" : "▶"; last = null;
+  });
+  $("b_start").addEventListener("click", function () { тяжело(function () { к(0); }); });
+  $("b_end").addEventListener("click", function () { тяжело(function () { к(prog().total); }); });
+  $("b_prev").addEventListener("click", function () { if (progIdx > 0) selectProg(progIdx - 1, true); });
+  $("b_next").addEventListener("click", function () { if (progIdx < progs.length - 1) selectProg(progIdx + 1, true); });
+  $("b_step").addEventListener("click", function () {
+    var p = prog(), s = segAt(p, playT), стр = p.L[s];
+    while (s < p.D.length - 1 && p.L[s] === стр) s++;
+    к(p.T[s] + 1e-6);
+  });
+  $("slider").addEventListener("input", function () { var p = prog(); к(p.total * $("slider").value / 10000); });
+  function кСтроке() {
+    var N_ = +$("line").value, p = prog();
+    for (var s = 0; s < p.L.length; s++) if (p.L[s] >= N_) { playing = false; $("b_play").textContent = "▶"; тяжело(function () { к(p.T[s] + 1e-6); навести(); }); return; }
+  }
+  $("go").addEventListener("click", кСтроке);
+  $("line").addEventListener("keydown", function (e) { if (e.key === "Enter") кСтроке(); });
+  function кЗаходу(шаг) {
+    var p = prog(), з = p.заходыСег, s = segAt(p, playT), i = нижняя(з, s);        // з[i] ≥ s
+    var цельС = шаг > 0 ? (i < з.length && з[i] > s ? з[i] : з[i + 1]) : з[i - 1];
+    if (цельС === undefined) return;
+    playing = false; $("b_play").textContent = "▶";
+    тяжело(function () { к(p.T[цельС] + 1e-6); навести(); });
+  }
+  $("b_next_entry").addEventListener("click", function () { кЗаходу(1); });
+  $("b_prev_entry").addEventListener("click", function () { кЗаходу(-1); });
+  ["t_ahead", "t_pathall", "t_wood", "t_entry", "t_air", "t_rapid"].forEach(function (id) { $(id).addEventListener("change", function () { updateInfo(); }); });
+  $("t_colors").addEventListener("change", function () { markAll(); refreshMesh(); });
+  $("t_ghost").addEventListener("change", setGhost);
+  $("t_bolts").addEventListener("change", function () { болты.visible = $("t_bolts").checked; });
+  $("t_dims").addEventListener("change", function () { размеры.visible = $("t_dims").checked; });
+
+  // скорость проигрывания: ползунок 0…1000 → ×0,25…×30 по логарифму; рядом с ×1 — ровно ×1
+  function скорость() {
+    var s = 0.25 * Math.pow(120, (+$("speed").value) / 1000);
+    return Math.abs(s - 1) < 0.03 ? 1 : s;
+  }
+  function подписьСкорости() {
+    var s = скорость(), т = s < 1 ? s.toFixed(2) : s < 10 ? s.toFixed(1) : Math.round(s).toString();
+    if (т.indexOf(".") >= 0) т = т.replace(/0+$/, "").replace(/\.$/, "");      // 0,50 → 0,5; 30 не трогать
+    $("speed-val").textContent = "×" + т.replace(".", ",");
+  }
+  $("speed").addEventListener("input", подписьСкорости);
+  $("speed").value = 290; подписьСкорости();
+
+  // ---------------- камера ----------------
+  // тянуть — поворот; правая или средняя кнопка, Shift, Ctrl — сдвиг; колесо — масштаб к курсору; двойной щелчок
+  // или двойное касание — точка в центр; два пальца — масштаб и сдвиг
+  var азимут = -2.2, высота = 0.62, дистанция = Р * 1.25, сдвиг = new THREE.Vector3(), цель = new THREE.Vector3();
+  var РАКУРСЫ = { "34": [-2.2, 0.62, Р * 1.25], "top": [-Math.PI / 2, 1.55, Р * 1.35], "side": [-Math.PI / 2, 0.1, Р * 1.3],
+                 "end": [Math.PI, 0.25, Р * 1.1], "tool": [-2.3, 0.55, 70] };
+  function навести() {
+    if ($("t_follow").checked) return;
+    сдвиг.set(tool.position.x - ЦЕНТР[0], tool.position.y - ЦЕНТР[1], tool.position.z - ЦЕНТР[2]);
+    дистанция = Math.min(дистанция, 160);
+  }
+  Array.prototype.forEach.call(document.querySelectorAll("[data-view]"), function (b) {
+    b.addEventListener("click", function () {
+      var v = b.getAttribute("data-view"), r = РАКУРСЫ[v];
+      азимут = r[0]; высота = r[1]; дистанция = r[2]; сдвиг.set(0, 0, 0);
+      if (v === "tool") $("t_follow").checked = true;
+      else if (v !== "end") $("t_follow").checked = false;
+      Array.prototype.forEach.call(document.querySelectorAll("[data-view]"), function (x) { x.setAttribute("aria-pressed", x === b ? "true" : "false"); });
+    });
+  });
+  var drag = null, пальцы = {}, щипок = null, середина = null, режимСдвига = false;
+  var ДИСТ_МИН = 8, ДИСТ_МАКС = 4000;
+  function point(e) { return { x: e.clientX, y: e.clientY }; }
+  function числоПальцев() { return Object.keys(пальцы).length; }
+  function расстояниеПальцев() { var k = Object.keys(пальцы), a = пальцы[k[0]], b = пальцы[k[1]]; return Math.hypot(a.x - b.x, a.y - b.y); }
+  function серединаПальцев() { var k = Object.keys(пальцы), a = пальцы[k[0]], b = пальцы[k[1]]; return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }; }
+  var вправо = new THREE.Vector3(), вверх = new THREE.Vector3();
+  function сдвинуть(dx, dy) {
+    var h = canvas.clientHeight || 1, мир = 2 * camera.position.distanceTo(цель) * Math.tan(camera.fov * Math.PI / 360) / h;
+    вправо.setFromMatrixColumn(camera.matrix, 0); вверх.setFromMatrixColumn(camera.matrix, 1);
+    сдвиг.addScaledVector(вправо, -dx * мир).addScaledVector(вверх, dy * мир);
+  }
+  canvas.addEventListener("contextmenu", function (e) { e.preventDefault(); });
+  canvas.addEventListener("pointerdown", function (e) {
+    пальцы[e.pointerId] = point(e);
+    try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* указатель уже отпущен */ }
+    if (числоПальцев() === 2) { щипок = расстояниеПальцев(); середина = серединаПальцев(); drag = null; }
+    else if (числоПальцев() === 1) { drag = point(e); режимСдвига = e.pointerType === "mouse" && (e.button === 1 || e.button === 2 || e.shiftKey || e.ctrlKey); }
+    $("t_spin").checked = false;
+  });
+  canvas.addEventListener("pointermove", function (e) {
+    if (!(e.pointerId in пальцы)) return;
+    var p = point(e); пальцы[e.pointerId] = p;
+    if (числоПальцев() >= 2) {
+      var d = расстояниеПальцев(), m = серединаПальцев();
+      if (щипок && d > 0) дистанция = Math.max(ДИСТ_МИН, Math.min(ДИСТ_МАКС, дистанция * щипок / d));
+      if (середина) сдвинуть(m.x - середина.x, m.y - середина.y);
+      щипок = d; середина = m; return;
+    }
+    if (!drag) return;
+    if (режимСдвига) { сдвинуть(p.x - drag.x, p.y - drag.y); drag = p; return; }
+    азимут -= (p.x - drag.x) * 0.008; высота = Math.max(-1.2, Math.min(1.56, высота + (p.y - drag.y) * 0.006)); drag = p;
+  });
+  var прошлоеКасание = null;
+  function отпустить(e) {
+    if (e.type === "pointerup" && e.pointerType === "touch" && числоПальцев() === 1) {
+      var tt = performance.now(), q = point(e);
+      if (прошлоеКасание && tt - прошлоеКасание.t < 320 && Math.hypot(q.x - прошлоеКасание.x, q.y - прошлоеКасание.y) < 30) {
+        вЦентр(q.x, q.y); прошлоеКасание = null;
+      } else { прошлоеКасание = { t: tt, x: q.x, y: q.y }; }
+    }
+    режимСдвига = false; delete пальцы[e.pointerId]; щипок = null; середина = null;
+    var k = Object.keys(пальцы); drag = k.length === 1 ? пальцы[k[0]] : null;
+  }
+  ["pointerup", "pointercancel"].forEach(function (ev) { canvas.addEventListener(ev, отпустить); });
+  var луч = new THREE.Raycaster(), мышь = new THREE.Vector2(), плоскость = new THREE.Plane(), точка = new THREE.Vector3();
+  function лучИз(x, y) { var r = canvas.getBoundingClientRect(); мышь.set((x - r.left) / r.width * 2 - 1, -(y - r.top) / r.height * 2 + 1); луч.setFromCamera(мышь, camera); }
+  canvas.addEventListener("wheel", function (e) {
+    e.preventDefault();
+    var было = дистанция; дистанция = Math.max(ДИСТ_МИН, Math.min(ДИСТ_МАКС, дистанция * (1 + Math.sign(e.deltaY) * 0.1)));
+    var k = дистанция / было; if (k === 1) return;
+    лучИз(e.clientX, e.clientY);
+    var взгляд = new THREE.Vector3(); camera.getWorldDirection(взгляд); плоскость.setFromNormalAndCoplanarPoint(взгляд, цель);
+    if (луч.ray.intersectPlane(плоскость, точка)) сдвиг.addScaledVector(точка.sub(цель), 1 - k);
+  }, { passive: false });
+  function вЦентр(x, y) {
+    лучИз(x, y);
+    var hits = луч.intersectObject(blankMesh, false);
+    if (hits.length) точка.copy(hits[0].point);
+    else if (!луч.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 0, 1), -ЦЕНТР[2]), точка)) return;
+    $("t_follow").checked = false;
+    сдвиг.set(точка.x - ЦЕНТР[0], точка.y - ЦЕНТР[1], точка.z - ЦЕНТР[2]);
+    $("t_spin").checked = false;
+  }
+  canvas.addEventListener("dblclick", function (e) { вЦентр(e.clientX, e.clientY); });
+  function resize() {
+    var w = canvas.clientWidth, h = canvas.clientHeight;
+    if (!w || !h) return;
+    if (canvas.width !== Math.round(w * renderer.getPixelRatio()) || canvas.height !== Math.round(h * renderer.getPixelRatio())) {
+      renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix();
+    }
+  }
+  function place() {
+    if ($("t_follow").checked) цель.copy(tool.position).add(сдвиг);
+    else цель.set(ЦЕНТР[0], ЦЕНТР[1], ЦЕНТР[2]).add(сдвиг);
+    var дист = дистанция * Math.max(1, 1.3 / camera.aspect);
+    camera.position.set(цель.x + дист * Math.cos(высота) * Math.cos(азимут), цель.y + дист * Math.cos(высота) * Math.sin(азимут),
+                        цель.z + дист * Math.sin(высота));
+    camera.up.set(0, 0, 1); camera.lookAt(цель); camera.updateMatrixWorld();
+  }
+  function кадр() { resize(); place(); выгрузить(); renderer.render(scene, camera); }
+
+  var last = null;
+  function tick(now) {
+    if (playing) {
+      // редкие кадры (слабый компьютер) не замедляют проигрывание; после долгой паузы вкладки — не прыжок
+      var dt = last === null ? 0 : Math.min(0.5, (now - last) / 1000);
+      var p = prog(), t = playT + dt * скорость();
+      if (t >= p.total) {
+        к(p.total);
+        if ($("t_auto").checked && progIdx < progs.length - 1) selectProg(progIdx + 1, true, false, true);
+        else { playing = false; $("b_play").textContent = "▶"; }
+      } else к(t);
+    }
+    last = now;
+    if ($("t_spin").checked && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) азимут += 0.003;
+    кадр();
+    requestAnimationFrame(tick);
+  }
+
+  // служебное: проверка без анимации (скрытая вкладка не рисует кадры)
+  window.СМОТРЕЛКА = {
+    к: function (доля) { var p = prog(); к(p.total * доля); кадр(); },
+    программа: function (i, вКонец) { progIdx = i; H = null; doneSeg = 0; КТ = []; var p = prog(); buildTool(p); buildPath(p); buildBolts(p); showBads(p); seek(вКонец ? p.total : 0); markAll(); refreshMesh(); pressButtons(); updateInfo(); кадр(); },
+    ракурс: function (a, h, d, сд) { азимут = a; высота = h; дистанция = d; сдвиг.set(сд ? сд[0] : 0, сд ? сд[1] : 0, сд ? сд[2] : 0); кадр(); },
+    сцена: function () { return { scene: scene, renderer: renderer, заготовка: blankMesh, путь: pathGroup }; },
+    состояние: function () { var p = prog(), q = toolPos(p, playT); return { программа: p["кратко"], t: playT, всего: p.total, строка: p.L[q.s], сетка: [NX, NY, RES], заходов: p.заходов }; },
+    отклонения: function (x0, x1, y0, y1) {
+      if (!ЕСТЬ_ЦЕЛЬ) return null;
+      var v = [], g = 0;
+      for (var j = 0; j < NY; j++) for (var i = 0; i < NX; i++) {
+        var x = cx(i), y = cy(j), k = j * NX + i;
+        if (x < x0 || x > x1 || y < y0 || y > y1 || isNaN(THI[k]) || H[k] < -1e8) continue;
+        v.push(H[k] - THI[k]); if (H[k] < TLO[k] - 0.05) g++;
+      }
+      v.sort(function (a, b) { return a - b; });
+      return { n: v.length, глубже: g, медиана: v[v.length >> 1], п95: v[Math.floor(v.length * 0.95)], макс: v[v.length - 1] };
+    }
+  };
+
+  // ---------------- запуск ----------------
+  busy(true);
+  var all = [unpackMap(Д["старт"], AIR)];
+  if (ЕСТЬ_ЦЕЛЬ) all.push(unpackMap(Д["цель"].hi, NaN), unpackMap(Д["цель"].lo, NaN));
+  progs.forEach(function (p) { all.push(unpackProgram(p)); });
+  Promise.all(all).then(function (r) {
+    START = r[0];
+    if (ЕСТЬ_ЦЕЛЬ) { THI = r[1]; TLO = r[2]; }
+    progs.forEach(function (p) { всегоЦепочки += p.total; });
+    buildBlank(); buildLegend(); buildProgButtons();
+    selectProg(0, true);
+    requestAnimationFrame(tick);
+  }).catch(function (e) { $("note").textContent = "Не распаковалось: " + e; busy(false); });
+  }
+})();
+</script>
