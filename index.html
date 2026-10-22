@@ -103,7 +103,7 @@
   .note ul { margin: 2px 0 0; padding-left: 20px; }
   /* узкий экран: колонка справа уходит вниз, сцена с полосой проигрывания — по-прежнему на один экран */
   @media (max-width: 960px) { .app { height: auto; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto; }
-                              .main { height: calc(100dvh - 16px); } .side { overflow: visible; } }
+                              .main { height: calc(100dvh - 24px - var(--шапка, 120px)); } .side { overflow: visible; } }
   @media (max-width: 640px) { .gcode { display: none; }
                               .toolinfo { font-size: 11px; left: 8px; right: 8px; top: 8px; text-align: left; } }
 </style>
@@ -198,6 +198,10 @@
 (function () {
   "use strict";
   var $ = function (id) { return document.getElementById(id); };
+  // узкий экран: сцена с полосой проигрывания — ровно на экран под шапкой
+  function шапка() { document.documentElement.style.setProperty("--шапка", document.querySelector(".top").offsetHeight + "px"); }
+  window.addEventListener("resize", шапка); new MutationObserver(шапка).observe(document.querySelector(".top"), { childList: true, subtree: true, attributes: true });
+  шапка();
   var ВШИТО = /*ДАННЫЕ*/null;
   if (ВШИТО) { запуск(ВШИТО); return; }
 
