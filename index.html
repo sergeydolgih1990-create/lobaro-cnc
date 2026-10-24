@@ -741,14 +741,20 @@
   $("speed").value = 290; подписьСкорости();
 
   // ---------------- камера ----------------
-  // тянуть — поворот; правая или средняя кнопка, Shift, Ctrl — сдвиг; колесо — масштаб к курсору; двойной щелчок
+  // тянуть — поворот вокруг точки детали под курсором в момент нажатия (нет детали под курсором — вокруг прежней
+  // точки; «камера за фрезой» — вокруг фрезы), Сергей, 24.10.2026; правая или средняя кнопка, Shift, Ctrl — сдвиг;
+  // колесо — масштаб к курсору; двойной щелчок
   // или двойное касание — точка в центр; два пальца — масштаб и сдвиг; щелчок левой кнопкой (мышь не сдвинулась) —
   // пауза / дальше, как кнопка ▶ (Сергей, 24.10.2026); в конце программы щелчок с начала не запускает
   var азимут = -2.2, высота = 0.62, дистанция = Р * 1.25, сдвиг = new THREE.Vector3(), цель = new THREE.Vector3();
   var РАКУРСЫ = { "34": [-2.2, 0.62, Р * 1.25], "top": [-Math.PI / 2, 1.55, Р * 1.35], "side": [-Math.PI / 2, 0.1, Р * 1.3],
                  "end": [Math.PI, 0.25, Р * 1.1], "tool": [-2.3, 0.55, 70] };
+  // после перехода к строке или заходу: вид сдвигается к фрезе, только если она у края экрана или за ним
+  // (точку вращения переход больше не трогает — она выбирается при каждом повороте, Сергей, 24.10.2026)
   function навести() {
     if ($("t_follow").checked) return;
+    var v = tool.position.clone().project(camera);
+    if (v.z < 1 && Math.abs(v.x) < 0.85 && Math.abs(v.y) < 0.85) return;
     сдвиг.set(tool.position.x - ЦЕНТР[0], tool.position.y - ЦЕНТР[1], tool.position.z - ЦЕНТР[2]);
     дистанция = Math.min(дистанция, 160);
   }
@@ -778,7 +784,10 @@
     пальцы[e.pointerId] = point(e);
     try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* указатель уже отпущен */ }
     if (числоПальцев() === 2) { щипок = расстояниеПальцев(); середина = серединаПальцев(); drag = null; }
-    else if (числоПальцев() === 1) { drag = point(e); режимСдвига = e.pointerType === "mouse" && (e.button === 1 || e.button === 2 || e.shiftKey || e.ctrlKey); }
+    else if (числоПальцев() === 1) {
+      drag = point(e); режимСдвига = e.pointerType === "mouse" && (e.button === 1 || e.button === 2 || e.shiftKey || e.ctrlKey);
+      опора = режимСдвига || $("t_follow").checked ? null : точкаПодКурсором(e.clientX, e.clientY);
+    }
     щелчок = e.pointerType === "mouse" && e.button === 0 && !e.shiftKey && !e.ctrlKey && числоПальцев() === 1
       ? { x: e.clientX, y: e.clientY, t: performance.now() } : null;
     $("t_spin").checked = false;
@@ -794,8 +803,50 @@
     }
     if (!drag) return;
     if (режимСдвига) { сдвинуть(p.x - drag.x, p.y - drag.y); drag = p; return; }
-    азимут -= (p.x - drag.x) * 0.008; высота = Math.max(-1.2, Math.min(1.56, высота + (p.y - drag.y) * 0.006)); drag = p;
+    var da = -(p.x - drag.x) * 0.008, h2 = Math.max(-1.2, Math.min(1.56, высота + (p.y - drag.y) * 0.006));
+    if (опора) повернутьВокруг(опора, da, h2 - высота);
+    азимут += da; высота = h2; drag = p;
   });
+  // поворот всей камеры (и её цели) вокруг опоры: по азимуту — вокруг вертикали через опору, по высоте — вокруг
+  // горизонтали поперёк взгляда; опора остаётся на том же месте экрана
+  var опора = null, ОСЬ_Z = new THREE.Vector3(0, 0, 1), осьВбок = new THREE.Vector3(), отОпоры = new THREE.Vector3();
+  function повернутьВокруг(P, da, dh) {
+    отОпоры.set(ЦЕНТР[0] + сдвиг.x - P.x, ЦЕНТР[1] + сдвиг.y - P.y, ЦЕНТР[2] + сдвиг.z - P.z);
+    отОпоры.applyAxisAngle(ОСЬ_Z, da);
+    var а = азимут + da;
+    осьВбок.set(Math.sin(а), -Math.cos(а), 0);
+    отОпоры.applyAxisAngle(осьВбок, dh);
+    сдвиг.set(P.x + отОпоры.x - ЦЕНТР[0], P.y + отОпоры.y - ЦЕНТР[1], P.z + отОпоры.z - ЦЕНТР[2]);
+  }
+  // точка детали под курсором — проходом луча по карте высот (быстро и на метровой заготовке); вне детали, но над
+  // сеткой — верх поддона (Z 0); мимо сетки — null
+  function точкаПодКурсором(x, y) {
+    if (!H) return null;
+    лучИз(x, y);
+    var o = луч.ray.origin, d = луч.ray.direction, X1 = GX0 + NX * RES, Y1 = GY0 + NY * RES, ZВ = 2 * ЦЕНТР[2] + 5;
+    var t0 = 0, t1 = 1e7, гр = [[o.x, d.x, GX0, X1], [o.y, d.y, GY0, Y1], [o.z, d.z, -1, ZВ]];
+    for (var q = 0; q < 3; q++) {
+      var o_ = гр[q][0], d_ = гр[q][1], lo = гр[q][2], hi = гр[q][3];
+      if (Math.abs(d_) < 1e-12) { if (o_ < lo || o_ > hi) return null; continue; }
+      var a = (lo - o_) / d_, b = (hi - o_) / d_;
+      if (a > b) { var c = a; a = b; b = c; }
+      t0 = Math.max(t0, a); t1 = Math.min(t1, b);
+      if (t0 > t1) return null;
+    }
+    function выше(t) {                                            // луч в точке t выше поверхности?
+      var px = o.x + d.x * t, py = o.y + d.y * t, i = Math.floor((px - GX0) / RES), j = Math.floor((py - GY0) / RES);
+      if (i < 0 || j < 0 || i >= NX || j >= NY) return true;
+      var h = H[j * NX + i]; return o.z + d.z * t > (h > AIR ? h : 0);
+    }
+    var гор = Math.hypot(d.x, d.y), шаг = Math.min(RES * 0.5 / Math.max(гор, 1e-6), 0.25 / Math.max(Math.abs(d.z), 1e-6));
+    for (var t = t0; t <= t1; t += шаг) {
+      if (выше(t)) continue;
+      var a_ = Math.max(t0, t - шаг), b_ = t;
+      for (var k = 0; k < 20; k++) { var m = (a_ + b_) / 2; if (выше(m)) a_ = m; else b_ = m; }
+      return new THREE.Vector3(o.x + d.x * b_, o.y + d.y * b_, o.z + d.z * b_);
+    }
+    return null;
+  }
   var прошлоеКасание = null;
   // щелчок левой — пауза / дальше: только если мышь почти не сдвинулась (иначе это поворот) и кнопку не держали; ответ
   // ждёт ЖДАТЬ_ДВОЙНОГО мс — второй щелчок за это время (двойной — точка в центр) паузу отменяет
@@ -880,7 +931,8 @@
     к: function (доля) { var p = prog(); к(p.total * доля); кадр(); },
     программа: function (i, вКонец) { progIdx = i; H = null; doneSeg = 0; КТ = []; var p = prog(); buildTool(p); buildPath(p); buildBolts(p); showBads(p); seek(вКонец ? p.total : 0); markAll(); refreshMesh(); pressButtons(); updateInfo(); кадр(); },
     ракурс: function (a, h, d, сд) { азимут = a; высота = h; дистанция = d; сдвиг.set(сд ? сд[0] : 0, сд ? сд[1] : 0, сд ? сд[2] : 0); кадр(); },
-    сцена: function () { return { scene: scene, renderer: renderer, заготовка: blankMesh, путь: pathGroup }; },
+    сцена: function () { return { scene: scene, renderer: renderer, заготовка: blankMesh, путь: pathGroup, камера: camera }; },
+    точкаПодКурсором: function (x, y) { return точкаПодКурсором(x, y); },
     состояние: function () { var p = prog(), q = toolPos(p, playT); return { программа: p["кратко"], t: playT, всего: p.total, строка: p.L[q.s], сетка: [NX, NY, RES], заходов: p.заходов }; },
     отклонения: function (x0, x1, y0, y1) {
       if (!ЕСТЬ_ЦЕЛЬ) return null;
