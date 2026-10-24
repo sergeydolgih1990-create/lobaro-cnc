@@ -72,7 +72,9 @@
            font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 12px; line-height: 1.45;
            background: color-mix(in srgb, var(--panel) 88%, transparent); border: 1px solid var(--line);
            border-radius: 3px; white-space: pre; overflow: hidden; }
-  .gcode .cur { background: var(--cur); display: inline-block; min-width: 100%; }
+  .gcode .ln { display: inline-block; min-width: 100%; cursor: pointer; }
+  .gcode .ln:hover { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+  .gcode .cur { background: var(--cur); }
   .gcode .n { color: var(--muted); }
   .toolinfo { position: absolute; right: 10px; top: 10px; padding: 6px 10px; font-size: 13px;
               background: color-mix(in srgb, var(--panel) 88%, transparent); border: 1px solid var(--line);
@@ -126,13 +128,14 @@
   <main class="main">
     <div class="stage">
       <canvas id="c"></canvas>
-      <pre class="gcode" id="gcode" aria-label="Строки программы вокруг текущей"></pre>
+      <pre class="gcode" id="gcode" aria-label="Строки программы: щелчок по строке — перейти к ней, колесо — прокрутка"></pre>
       <div class="toolinfo" id="toolinfo"></div>
       <div class="busy" id="busy">считаю предыдущие программы…</div>
     </div>
     <div class="bar" role="group" aria-label="Проигрывание">
       <button type="button" id="b_start" title="к началу программы">⏮</button>
       <button type="button" id="b_prev" title="предыдущая программа (фреза)">◀◀</button>
+      <button type="button" id="b_back" title="предыдущая строка программы">|◀</button>
       <button type="button" id="b_play" title="пуск / пауза">▶</button>
       <button type="button" id="b_step" title="следующая строка программы">▶|</button>
       <button type="button" id="b_next" title="следующая программа (фреза)">▶▶</button>
@@ -620,6 +623,19 @@
       if (пуск) { playing = true; $("b_play").textContent = "❚❚"; last = null; }
     });
   }
+  // окно строк программы: 9 строк вокруг текущей; колесо над окном прокручивает (просмотр — средняя строка окна,
+  // пока курсор в окне), щелчок по строке — переход к ней (Сергей, 24.10.2026)
+  var просмотр = null, СТРОК_ОКНА = 9, ШАГ_КОЛЕСА = 3;
+  function показатьСтроки(p, стр) {
+    var всего = p.text.length, пол = (СТРОК_ОКНА - 1) / 2, ц = просмотр != null ? просмотр : стр;
+    var от = Math.max(1, Math.min(ц - пол, всего - СТРОК_ОКНА + 1)), до = Math.min(всего, от + СТРОК_ОКНА - 1);
+    var out = [], w = String(p["строк"]).length;
+    for (var n = от; n <= до; n++) {
+      out.push('<span class="ln' + (n === стр ? " cur" : "") + '" data-n="' + n + '"><span class="n">' +
+               String(n).padStart(w, " ") + "</span>  " + экр(p.text[n - 1]) + "</span>");
+    }
+    $("gcode").innerHTML = out.join("\n");
+  }
   function updateInfo() {
     var p = prog(), q = toolPos(p, playT);
     tool.position.set(q.x, q.y, q.z);
@@ -630,12 +646,7 @@
     $("toolinfo").innerHTML = "<b>" + фрезаТекст(p) + "</b> · " + экр(p["кратко"]) +
       "<br>X " + q.x.toFixed(2) + "  Y " + q.y.toFixed(2) + "  Z " + q.z.toFixed(2) +
       "<br>строка " + стр + " · " + ВИДЫ[k].имя + (k === 0 ? "" : ", F" + Math.round(p.F[q.s]));
-    var out = [], w = String(p["строк"]).length;
-    for (var n = Math.max(1, стр - 4); n <= Math.min(p.text.length, стр + 4); n++) {
-      var t = '<span class="n">' + String(n).padStart(w, " ") + "</span>  " + экр(p.text[n - 1]);
-      out.push(n === стр ? '<span class="cur">' + t + "</span>" : t);
-    }
-    $("gcode").innerHTML = out.join("\n");
+    показатьСтроки(p, стр);
     var пв = p["по_видам"];
     var facts = [["программа", (progIdx + 1) + " из " + progs.length], ["фреза", фрезаТекст(p)],
                  ["время программы", fmt(p.total)], ["вся цепочка", fmt(всегоЦепочки)],
@@ -663,11 +674,42 @@
     while (s < p.D.length - 1 && p.L[s] === стр) s++;
     к(p.T[s] + 1e-6);
   });
+  // предыдущая строка: к началу строки перед текущей (зеркально ▶|, которая ставит к началу следующей)
+  $("b_back").addEventListener("click", function () {
+    var p = prog(), s = segAt(p, playT), стр = p.L[s];
+    while (s > 0 && p.L[s - 1] === стр) s--;                  // начало текущей строки
+    if (s === 0) { к(0); return; }
+    s--; стр = p.L[s];
+    while (s > 0 && p.L[s - 1] === стр) s--;                  // начало предыдущей
+    к(p.T[s] + 1e-6);
+  });
   $("slider").addEventListener("input", function () { var p = prog(); к(p.total * $("slider").value / 10000); });
-  function кСтроке() {
-    var N_ = +$("line").value, p = prog();
-    for (var s = 0; s < p.L.length; s++) if (p.L[s] >= N_) { playing = false; $("b_play").textContent = "▶"; тяжело(function () { к(p.T[s] + 1e-6); навести(); }); return; }
+  function кСтрокеНомер(N_) {
+    var p = prog();
+    playing = false; $("b_play").textContent = "▶";
+    for (var s = 0; s < p.L.length; s++) if (p.L[s] >= N_) { тяжело(function () { к(p.T[s] + 1e-6); навести(); }); return; }
+    тяжело(function () { к(p.total); });                         // после последнего хода (M02, %) — конец программы
   }
+  function кСтроке() { кСтрокеНомер(+$("line").value); }
+  $("gcode").addEventListener("click", function (e) {
+    var эл = e.target.closest ? e.target.closest("[data-n]") : null;
+    if (!эл) return;
+    var n = +эл.getAttribute("data-n");
+    $("line").value = n; просмотр = null; кСтрокеНомер(n);
+  });
+  $("gcode").addEventListener("wheel", function (e) {
+    e.preventDefault();
+    var p = prog(), стр = p.L[segAt(p, playT)], всего = p.text.length, пол = (СТРОК_ОКНА - 1) / 2;
+    var ц = (просмотр != null ? просмотр : стр) + Math.sign(e.deltaY) * ШАГ_КОЛЕСА;
+    просмотр = Math.max(1 + пол, Math.min(всего - пол, ц));
+    показатьСтроки(p, стр);
+  }, { passive: false });
+  function кТекущейСтроке() {
+    if (просмотр == null) return;
+    просмотр = null; var p = prog(); показатьСтроки(p, p.L[segAt(p, playT)]);
+  }
+  $("gcode").addEventListener("mouseleave", кТекущейСтроке);
+  canvas.addEventListener("pointermove", кТекущейСтроке);         // запасной путь: мышь уже над сценой
   $("go").addEventListener("click", кСтроке);
   $("line").addEventListener("keydown", function (e) { if (e.key === "Enter") кСтроке(); });
   function кЗаходу(шаг) {
