@@ -648,11 +648,12 @@
   }
   function к(t) { seek(t); refreshMesh(); updateInfo(); }
 
-  $("b_play").addEventListener("click", function () {
+  function пускПауза(сНачала) {
     var p = prog();
-    if (!playing && playT >= p.total - 1e-6) к(0);
+    if (!playing && playT >= p.total - 1e-6) { if (!сНачала) return; к(0); }
     playing = !playing; $("b_play").textContent = playing ? "❚❚" : "▶"; last = null;
-  });
+  }
+  $("b_play").addEventListener("click", function () { пускПауза(true); });
   $("b_start").addEventListener("click", function () { тяжело(function () { к(0); }); });
   $("b_end").addEventListener("click", function () { тяжело(function () { к(prog().total); }); });
   $("b_prev").addEventListener("click", function () { if (progIdx > 0) selectProg(progIdx - 1, true); });
@@ -699,7 +700,8 @@
 
   // ---------------- камера ----------------
   // тянуть — поворот; правая или средняя кнопка, Shift, Ctrl — сдвиг; колесо — масштаб к курсору; двойной щелчок
-  // или двойное касание — точка в центр; два пальца — масштаб и сдвиг
+  // или двойное касание — точка в центр; два пальца — масштаб и сдвиг; щелчок левой кнопкой (мышь не сдвинулась) —
+  // пауза / дальше, как кнопка ▶ (Сергей, 24.10.2026); в конце программы щелчок с начала не запускает
   var азимут = -2.2, высота = 0.62, дистанция = Р * 1.25, сдвиг = new THREE.Vector3(), цель = new THREE.Vector3();
   var РАКУРСЫ = { "34": [-2.2, 0.62, Р * 1.25], "top": [-Math.PI / 2, 1.55, Р * 1.35], "side": [-Math.PI / 2, 0.1, Р * 1.3],
                  "end": [Math.PI, 0.25, Р * 1.1], "tool": [-2.3, 0.55, 70] };
@@ -735,6 +737,8 @@
     try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* указатель уже отпущен */ }
     if (числоПальцев() === 2) { щипок = расстояниеПальцев(); середина = серединаПальцев(); drag = null; }
     else if (числоПальцев() === 1) { drag = point(e); режимСдвига = e.pointerType === "mouse" && (e.button === 1 || e.button === 2 || e.shiftKey || e.ctrlKey); }
+    щелчок = e.pointerType === "mouse" && e.button === 0 && !e.shiftKey && !e.ctrlKey && числоПальцев() === 1
+      ? { x: e.clientX, y: e.clientY, t: performance.now() } : null;
     $("t_spin").checked = false;
   });
   canvas.addEventListener("pointermove", function (e) {
@@ -751,7 +755,19 @@
     азимут -= (p.x - drag.x) * 0.008; высота = Math.max(-1.2, Math.min(1.56, высота + (p.y - drag.y) * 0.006)); drag = p;
   });
   var прошлоеКасание = null;
+  // щелчок левой — пауза / дальше: только если мышь почти не сдвинулась (иначе это поворот) и кнопку не держали; ответ
+  // ждёт ЖДАТЬ_ДВОЙНОГО мс — второй щелчок за это время (двойной — точка в центр) паузу отменяет
+  var щелчок = null, таймерЩелчка = null, ЖДАТЬ_ДВОЙНОГО = 280, СДВИГ_ЩЕЛЧКА = 4, ДЕРЖАТЬ_ЩЕЛЧОК = 450;
+  function отменитьЩелчок() { if (таймерЩелчка) { clearTimeout(таймерЩелчка); таймерЩелчка = null; } }
+  function проверитьЩелчок(e) {
+    var щ = щелчок; щелчок = null;
+    if (!щ || e.type !== "pointerup" || e.pointerType !== "mouse" || e.button !== 0) return;
+    if (Math.hypot(e.clientX - щ.x, e.clientY - щ.y) > СДВИГ_ЩЕЛЧКА || performance.now() - щ.t > ДЕРЖАТЬ_ЩЕЛЧОК) return;
+    if (таймерЩелчка) { отменитьЩелчок(); return; }                    // второй щелчок — это двойной, не пауза
+    таймерЩелчка = setTimeout(function () { таймерЩелчка = null; пускПауза(false); }, ЖДАТЬ_ДВОЙНОГО);
+  }
   function отпустить(e) {
+    проверитьЩелчок(e);
     if (e.type === "pointerup" && e.pointerType === "touch" && числоПальцев() === 1) {
       var tt = performance.now(), q = point(e);
       if (прошлоеКасание && tt - прошлоеКасание.t < 320 && Math.hypot(q.x - прошлоеКасание.x, q.y - прошлоеКасание.y) < 30) {
@@ -781,7 +797,7 @@
     сдвиг.set(точка.x - ЦЕНТР[0], точка.y - ЦЕНТР[1], точка.z - ЦЕНТР[2]);
     $("t_spin").checked = false;
   }
-  canvas.addEventListener("dblclick", function (e) { вЦентр(e.clientX, e.clientY); });
+  canvas.addEventListener("dblclick", function (e) { отменитьЩелчок(); вЦентр(e.clientX, e.clientY); });
   function resize() {
     var w = canvas.clientWidth, h = canvas.clientHeight;
     if (!w || !h) return;
