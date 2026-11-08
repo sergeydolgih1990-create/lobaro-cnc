@@ -445,7 +445,7 @@
   }
 
   var C = {
-    wood: [0.851, 0.765, 0.627], pallet: [0.79, 0.765, 0.714],
+    wood: [0.851, 0.765, 0.627], cut: [0.08, 0.045, 0.025], pallet: [0.79, 0.765, 0.714],
     ok: [0.561, 0.761, 0.490], gouge: [0.247, 0.435, 0.839],
     y: [0.925, 0.824, 0.298], o: [0.937, 0.604, 0.227], r: [0.784, 0.275, 0.227]
   };
@@ -468,7 +468,8 @@
     for (var j = j0; j <= j1; j++) for (var i = i0; i <= i1; i++) {
       var k = j * NX + i, h = H[k];
       pos[3 * k + 2] = h < -1e8 ? 0 : h;
-      var c = h < -1e8 ? C.pallet : (colors ? colorFor(h, THI[k], TLO[k]) : C.wood);
+      var c = h < -1e8 ? C.pallet : (colors ? colorFor(h, THI[k], TLO[k]) :
+        (!ЕСТЬ_ЦЕЛЬ && START[k] > AIR && h < START[k] - 0.02 ? C.cut : C.wood));
       col[3 * k] = c[0]; col[3 * k + 1] = c[1]; col[3 * k + 2] = c[2];
     }
     if (j0 < выгрузка.j0) выгрузка.j0 = j0; if (j1 > выгрузка.j1) выгрузка.j1 = j1;
@@ -600,7 +601,7 @@
       out.push(["#c8463a", "осталось больше 1 мм"], ["#ef9a3a", "0,3–1 мм"], ["#ecd24c", "0,05–0,3 мм"],
                ["#8fc27d", "как у модели (±0,05)"], ["#3f6fd6", "снято глубже модели"]);
       if (Д["есть_отход"]) out.push(["#d9c3a0", "отход (не деталь)"]);
-    }
+    } else out.push(["#50321e", "снятая поверхность (без сравнения с моделью)"]);
     var html = out.map(function (x) { return '<span><i style="background:' + x[0] + '"></i>' + x[1] + "</span>"; }).join("");
     html += ВИДЫ.map(function (v) { return '<span><i class="ln" style="background:var(' + v.css + ')"></i>' + v.имя + "</span>"; }).join("");
     $("legend").innerHTML = html;
