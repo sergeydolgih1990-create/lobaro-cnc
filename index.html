@@ -580,12 +580,16 @@
     return (h ? h + ":" + (m < 10 ? "0" : "") : "") + m + ":" + (s < 10 ? "0" : "") + s;
   }
   function фрезаТекст(p) { return "Ø" + чис(p.d, 3) + (p["радиусная"] ? " радиусная" : " торцевая"); }
+  function подписьЗоны(p) {
+    var з = (p["заметка"] || "").replace(/,\s*вылет не меньше [\d.,]+\s*мм/gi, "").replace(/\s+/g, " ").trim();
+    return з ? " · " + з : "";
+  }
   var всегоЦепочки = 0;
   function buildProgButtons() {
     var row = $("progs");
     progs.forEach(function (p, i) {
       var b = document.createElement("button"); b.type = "button";
-      b.textContent = p["кратко"] + " · " + чис(p.total / 60) + " мин";
+      b.textContent = p["кратко"] + подписьЗоны(p) + " · " + чис(p.total / 60) + " мин";
       b.title = p["имя"];
       b.addEventListener("click", function () { selectProg(i, true); }); row.appendChild(b);
     });
