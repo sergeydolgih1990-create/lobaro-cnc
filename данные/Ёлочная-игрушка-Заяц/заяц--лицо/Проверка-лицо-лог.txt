@@ -1,0 +1,5 @@
+Traceback (most recent call last):
+  File "C:\KnowledgeBase\_skills\lobaro\lobaro-cnc-program\scripts\проверка_программ_ЧПУ.py", line 793, in <module>
+    описание = json.load(open(os.path.join(папка, ОПИСАНИЕ), encoding="utf-8"))
+                         ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'Лицо-комплект\\Установка-ЧПУ.json'
