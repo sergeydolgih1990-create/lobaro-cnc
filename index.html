@@ -322,7 +322,14 @@
   var AIR = -1e9;
   function cx(i) { return GX0 + (i + 0.5) * RES; }
   function cy(j) { return GY0 + (j + 0.5) * RES; }
-  var START = null, THI = null, TLO = null;
+  var START = null, LOWER = null, THI = null, TLO = null;
+  function intervalPresent(k, state) { return state[k] > AIR && (!LOWER || (isFinite(LOWER[k]) && state[k] > LOWER[k] + 0.00001)); }
+  function intervalVolume(state) {
+    if (!state) return null;
+    var sum = 0, cells = 0;
+    for (var k = 0; k < N; k++) if (intervalPresent(k, state)) { sum += state[k] - (LOWER ? LOWER[k] : 0); cells++; }
+    return { volume_mm3: sum * RES * RES, cells: cells, has_lower: !!LOWER };
+  }
   var dirty = { i0: NX, i1: -1, j0: NY, j1: -1 };
   function markAll() { dirty.i0 = 0; dirty.i1 = NX - 1; dirty.j0 = 0; dirty.j1 = NY - 1; }
   function stampPoint(H, px, py, pz, r, ball) {
@@ -336,6 +343,7 @@
         var dx = GX0 + (i + 0.5) * RES - px, d2 = dx * dx + dy * dy;
         if (d2 > rr) continue;
         var z = ball ? pz + r - Math.sqrt(rr - d2) : pz;
+        if (LOWER && z <= LOWER[row + i] + 0.00001) z = AIR;
         if (z < H[row + i]) { H[row + i] = z; any = true; }
       }
     }
@@ -421,7 +429,54 @@
   // заготовки — сетка высот; треугольники только там, где есть дерево (воздух деревом не станет)
   var geo = new THREE.BufferGeometry(), pos = new Float32Array(N * 3), col = new Float32Array(N * 3);
   var posAttr, colAttr, blankMesh;
+  var intervalMesh = null, intervalGeometry = null, intervalStep = 2;
+  function buildIntervalBlank() {
+    var step = intervalStep, cols = Math.ceil((NX - 1) / step) + 1, rows = Math.ceil((NY - 1) / step) + 1;
+    var count = cols * rows, positions = new Float32Array(count * 6), colors = new Float32Array(count * 6);
+    intervalGeometry = new THREE.BufferGeometry();
+    intervalGeometry.setAttribute("position", new THREE.BufferAttribute(positions, 3).setUsage(THREE.DynamicDrawUsage));
+    intervalGeometry.setAttribute("color", new THREE.BufferAttribute(colors, 3).setUsage(THREE.DynamicDrawUsage));
+    intervalMesh = new THREE.Mesh(intervalGeometry, new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, side: THREE.DoubleSide, roughness: 0.85 }));
+    intervalMesh.frustumCulled = false;
+    intervalMesh.userData = { cols: cols, rows: rows, count: count, lower_surface: true, render_step_mm: RES * step };
+    scene.add(intervalMesh); blankMesh = intervalMesh;
+  }
+  function refreshIntervalBlank() {
+    if (!intervalMesh || !H) return;
+    var info = intervalMesh.userData, cols = info.cols, rows = info.rows, count = info.count;
+    var pp = intervalGeometry.attributes.position.array, cc = intervalGeometry.attributes.color.array;
+    var live = new Uint8Array(count), faces = new Uint8Array((cols - 1) * (rows - 1)), indices = [];
+    var colors = ЕСТЬ_ЦЕЛЬ && $("t_colors").checked;
+    for (var j = 0; j < rows; j++) for (var i = 0; i < cols; i++) {
+      var sx = Math.min(NX - 1, i * intervalStep), sy = Math.min(NY - 1, j * intervalStep), k = sy * NX + sx, v = j * cols + i;
+      live[v] = intervalPresent(k, H) ? 1 : 0;
+      var lo = isFinite(LOWER[k]) ? LOWER[k] : 0, hi = live[v] ? H[k] : lo;
+      pp[3*v] = pp[3*(v+count)] = cx(sx); pp[3*v+1] = pp[3*(v+count)+1] = cy(sy);
+      pp[3*v+2] = hi; pp[3*(v+count)+2] = lo;
+      var color = colors && live[v] ? colorFor(hi, THI[k], TLO[k]) : C.wood;
+      for (var a = 0; a < 3; a++) { cc[3*v+a] = color[a]; cc[3*(v+count)+a] = C.wood[a] * 0.85; }
+    }
+    function wall(a, b) { indices.push(a,b,b+count,a,b+count,a+count); }
+    for (var y = 0; y < rows-1; y++) for (var x = 0; x < cols-1; x++) {
+      var a0 = y*cols+x, a1=a0+1, a2=a0+cols, a3=a2+1;
+      if (live[a0] && live[a1] && live[a2] && live[a3]) faces[y*(cols-1)+x] = 1;
+    }
+    for (var y = 0; y < rows-1; y++) for (var x = 0; x < cols-1; x++) {
+      if (!faces[y*(cols-1)+x]) continue;
+      var a0=y*cols+x,a1=a0+1,a2=a0+cols,a3=a2+1;
+      indices.push(a0,a1,a3,a0,a3,a2,a0+count,a3+count,a1+count,a0+count,a2+count,a3+count);
+      if (y===0 || !faces[(y-1)*(cols-1)+x]) wall(a1,a0);
+      if (y===rows-2 || !faces[(y+1)*(cols-1)+x]) wall(a2,a3);
+      if (x===0 || !faces[y*(cols-1)+x-1]) wall(a0,a2);
+      if (x===cols-2 || !faces[y*(cols-1)+x+1]) wall(a3,a1);
+    }
+    intervalGeometry.setIndex(new THREE.BufferAttribute(new Uint32Array(indices),1));
+    intervalGeometry.attributes.position.needsUpdate=true; intervalGeometry.attributes.color.needsUpdate=true;
+    intervalGeometry.computeVertexNormals();
+    info.triangles=indices.length/3;
+  }
   function buildBlank() {
+    if (LOWER) { buildIntervalBlank(); return; }
     for (var j = 0; j < NY; j++) for (var i = 0; i < NX; i++) { var k = j * NX + i; pos[3 * k] = cx(i); pos[3 * k + 1] = cy(j); }
     var quads = 0, jj, ii, a0;
     for (jj = 0; jj < NY - 1; jj++) for (ii = 0; ii < NX - 1; ii++) {
@@ -462,6 +517,7 @@
   var выгрузка = { j0: NY, j1: -1 };       // строки сетки, которые надо отдать видеокарте до следующего кадра
   function refreshMesh() {
     if (dirty.i1 < 0) return;
+    if (LOWER) { refreshIntervalBlank(); dirty.i0=NX;dirty.i1=-1;dirty.j0=NY;dirty.j1=-1;return; }
     var colors = ЕСТЬ_ЦЕЛЬ && $("t_colors").checked;
     var j0 = Math.max(0, dirty.j0 - 1), j1 = Math.min(NY - 1, dirty.j1 + 1);
     var i0 = Math.max(0, dirty.i0 - 1), i1 = Math.min(NX - 1, dirty.i1 + 1);
@@ -938,6 +994,8 @@
     ракурс: function (a, h, d, сд) { азимут = a; высота = h; дистанция = d; сдвиг.set(сд ? сд[0] : 0, сд ? сд[1] : 0, сд ? сд[2] : 0); кадр(); },
     сцена: function () { return { scene: scene, renderer: renderer, заготовка: blankMesh, путь: pathGroup, камера: camera }; },
     точкаПодКурсором: function (x, y) { return точкаПодКурсором(x, y); },
+    объём: function () { return { start: intervalVolume(START), current: intervalVolume(H), lower: !!LOWER, render: intervalMesh ? intervalMesh.userData : null }; },
+    ячейка: function (x,y) { var i=Math.floor((x-GX0)/RES),j=Math.floor((y-GY0)/RES),k=j*NX+i; return { upper:H[k], lower:LOWER ? LOWER[k] : null, initial:START[k], present:intervalPresent(k,H) }; },
     состояние: function () { var p = prog(), q = toolPos(p, playT); return { программа: p["кратко"], t: playT, всего: p.total, строка: p.L[q.s], сетка: [NX, NY, RES], заходов: p.заходов }; },
     отклонения: function (x0, x1, y0, y1) {
       if (!ЕСТЬ_ЦЕЛЬ) return null;
@@ -955,11 +1013,14 @@
   // ---------------- запуск ----------------
   busy(true);
   var all = [unpackMap(Д["старт"], AIR)];
+  if (Д["низ_остатка"]) all.push(unpackMap(Д["низ_остатка"], NaN));
   if (ЕСТЬ_ЦЕЛЬ) all.push(unpackMap(Д["цель"].hi, NaN), unpackMap(Д["цель"].lo, NaN));
   progs.forEach(function (p) { all.push(unpackProgram(p)); });
   Promise.all(all).then(function (r) {
     START = r[0];
-    if (ЕСТЬ_ЦЕЛЬ) { THI = r[1]; TLO = r[2]; }
+    var offset = 1;
+    if (Д["низ_остатка"]) { LOWER = r[offset++]; if (LOWER.length !== N) throw new Error("Нижняя карта: неверный размер"); }
+    if (ЕСТЬ_ЦЕЛЬ) { THI = r[offset++]; TLO = r[offset++]; }
     progs.forEach(function (p) { всегоЦепочки += p.total; });
     buildBlank(); buildLegend(); buildProgButtons();
     selectProg(0, true);
