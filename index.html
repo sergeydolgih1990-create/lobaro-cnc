@@ -68,6 +68,11 @@
   .stage { position: relative; background: var(--panel); border: 1px solid var(--line); border-radius: 3px;
            flex: 1 1 auto; min-height: 220px; overflow: hidden; }
   .stage canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+  .xy-overlay { position:absolute; inset:0; pointer-events:none; overflow:hidden; }
+  .xy-label { position:absolute; transform:translate(-50%,8px); padding:0 3px; border-radius:2px; background:var(--panel); font:11px ui-monospace,monospace; white-space:nowrap; }
+  .xy-x { color:#b8453e; } .xy-y { color:#21836f; }
+  .xy-zero { color:var(--ink); font-weight:700; border:1px solid var(--line); }
+  .xy-badge { position:absolute; left:8px; bottom:6px; padding:1px 5px; background:var(--panel); color:var(--muted); font-size:11px; }
   .gcode { position: absolute; left: 10px; top: 10px; margin: 0; padding: 6px 8px; max-width: min(64ch, 58%);
            font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 12px; line-height: 1.45;
            background: color-mix(in srgb, var(--panel) 88%, transparent); border: 1px solid var(--line);
@@ -425,6 +430,39 @@
   var ground = new THREE.Mesh(new THREE.PlaneGeometry(NX * RES + 80, NY * RES + 80),
     new THREE.MeshStandardMaterial({ color: 0xc9c3b6, roughness: 0.95, transparent: true, opacity: 0.5 }));
   ground.position.set(GX0 + NX * RES / 2, GY0 + NY * RES / 2, -0.4); scene.add(ground);
+
+  // XY: two static line buffers, labels projected only when camera/viewport changes.
+  var xyLayer=document.createElement("div");xyLayer.className="xy-overlay";xyLayer.setAttribute("aria-label","Координаты XY в миллиметрах, плоскость Z=0");canvas.parentNode.appendChild(xyLayer);
+  var xyBadge=document.createElement("span");xyBadge.className="xy-badge";xyBadge.textContent="XY · мм · Z=0";xyLayer.appendChild(xyBadge);
+  var xyLabels=[],xyTicks=[[],[]],xyUpdates=0,xyBounds=[0,0,0,0];
+  (Д["заготовки"]||[]).forEach(function(b){xyBounds[0]=Math.min(xyBounds[0],b.x[0]);xyBounds[1]=Math.max(xyBounds[1],b.x[1]);xyBounds[2]=Math.min(xyBounds[2],b.y[0]);xyBounds[3]=Math.max(xyBounds[3],b.y[1]);});
+  if (!Д["заготовки"]||!Д["заготовки"].length) xyBounds=[Math.min(0,GX0),Math.max(0,GX0+(NX-1)*RES),Math.min(0,GY0),Math.max(0,GY0+(NY-1)*RES)];
+  var xySpan=Math.max(xyBounds[1]-xyBounds[0],xyBounds[3]-xyBounds[2],1),xyTickSize=xySpan*.008,xyArrow=xySpan*.018;
+  function xyLabel(text,x,y,axis,primary){var el=document.createElement("span");el.className="xy-label xy-"+axis;el.textContent=text;el.dataset.x=x;el.dataset.y=y;xyLayer.appendChild(el);xyLabels.push({el:el,point:new THREE.Vector3(x,y,0),primary:primary});}
+  xyLabel("0 · X0 Y0",0,0,"zero",true);
+  [0,1].forEach(function(axis){
+    var lo=xyBounds[axis*2],hi=xyBounds[axis*2+1],end=hi+xyArrow*3,vertices=[];
+    function line(a,b,c,d){if(axis===0)vertices.push(a,b,0,c,d,0);else vertices.push(b,a,0,d,c,0);}
+    line(lo,0,end,0);line(end,0,end-xyArrow,xyArrow*.5);line(end,0,end-xyArrow,-xyArrow*.5);
+    var raw=Math.max((hi-lo)/8,.001),power=Math.pow(10,Math.floor(Math.log10(raw))),factor=raw/power,step=(factor<=1?1:factor<=2?2:factor<=5?5:10)*power;
+    for(var i=Math.ceil(lo/step);i<=Math.floor(hi/step);i++){var value=Number((i*step).toPrecision(10));line(value,-xyTickSize,value,xyTickSize);xyTicks[axis].push(value);if(value!==0)xyLabel(String(value),axis===0?value:0,axis===0?0:value,axis===0?"x":"y",false);}
+    xyLabel(axis===0?"+X · мм":"+Y · мм",axis===0?end:0,axis===0?0:end,axis===0?"x":"y",true);
+    var geometry=new THREE.BufferGeometry();geometry.setAttribute("position",new THREE.Float32BufferAttribute(vertices,3));
+    var lines=new THREE.LineSegments(geometry,new THREE.LineBasicMaterial({color:axis===0?0xd65d54:0x329c88,depthTest:false,depthWrite:false,transparent:true,opacity:.85}));lines.renderOrder=20;lines.name=axis===0?"XY ruler X":"XY ruler Y";scene.add(lines);
+  });
+  var xyMatrix=new THREE.Matrix4(),xyProjection=new THREE.Matrix4(),xyPoint=new THREE.Vector3(),xyWidth=-1,xyHeight=-1;
+  function xyProject(){
+    var w=canvas.clientWidth,h=canvas.clientHeight;
+    if(w===xyWidth&&h===xyHeight&&xyMatrix.equals(camera.matrixWorld)&&xyProjection.equals(camera.projectionMatrix))return;
+    xyWidth=w;xyHeight=h;xyMatrix.copy(camera.matrixWorld);xyProjection.copy(camera.projectionMatrix);xyUpdates++;
+    var occupied=[];
+    [true,false].forEach(function(primary){xyLabels.forEach(function(label){
+      if(label.primary!==primary)return;xyPoint.copy(label.point).project(camera);
+      var x=(xyPoint.x+1)*w/2,y=(1-xyPoint.y)*h/2,visible=xyPoint.z>=-1&&xyPoint.z<=1&&x>30&&x<w-30&&y>18&&y<h-22;
+      if(visible&&!primary)visible=!occupied.some(function(p){return Math.abs(p[0]-x)<62&&Math.abs(p[1]-y)<28;});
+      label.el.hidden=!visible;if(visible){label.el.style.left=x.toFixed(1)+"px";label.el.style.top=y.toFixed(1)+"px";occupied.push([x,y]);}
+    });});xyBadge.textContent="XY · мм · Z=0"+(xyLabels[0].el.hidden?" · ноль вне вида":"");
+  }
 
   // заготовки — сетка высот; треугольники только там, где есть дерево (воздух деревом не станет)
   var geo = new THREE.BufferGeometry(), pos = new Float32Array(N * 3), col = new Float32Array(N * 3);
@@ -968,7 +1006,7 @@
                         цель.z + дист * Math.sin(высота));
     camera.up.set(0, 0, 1); camera.lookAt(цель); camera.updateMatrixWorld();
   }
-  function кадр() { resize(); place(); выгрузить(); renderer.render(scene, camera); }
+  function кадр() { resize(); place(); xyProject(); выгрузить(); renderer.render(scene, camera); }
 
   var last = null;
   function tick(now) {
@@ -993,6 +1031,7 @@
     к: function (доля) { var p = prog(); к(p.total * доля); кадр(); },
     программа: function (i, вКонец) { progIdx = i; H = null; doneSeg = 0; КТ = []; var p = prog(); buildTool(p); buildPath(p); buildBolts(p); showBads(p); seek(вКонец ? p.total : 0); markAll(); refreshMesh(); pressButtons(); updateInfo(); кадр(); },
     ракурс: function (a, h, d, сд) { азимут = a; высота = h; дистанция = d; сдвиг.set(сд ? сд[0] : 0, сд ? сд[1] : 0, сд ? сд[2] : 0); кадр(); },
+    ориентация: function () { return { bounds:xyBounds.slice(), ticks:xyTicks, labels:xyLabels.length, drawCalls:2, updates:xyUpdates, origin:[0,0,0], units:"мм", positions:xyLabels.map(function(l){return {text:l.el.textContent,x:l.point.x,y:l.point.y,hidden:l.el.hidden,left:l.el.style.left,top:l.el.style.top};}) }; },
     сцена: function () { return { scene: scene, renderer: renderer, заготовка: blankMesh, путь: pathGroup, камера: camera }; },
     точкаПодКурсором: function (x, y) { return точкаПодКурсором(x, y); },
     объём: function () { return { start: intervalVolume(START), current: intervalVolume(H), lower: !!LOWER, render: intervalMesh ? intervalMesh.userData : null }; },
