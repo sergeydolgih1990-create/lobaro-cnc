@@ -51,7 +51,7 @@ replace('<aside class="side">','''<aside class="side">
     </section>''')
 replace('<script src="three.min.js?v=9274bbcec8d9"></script>','''<script src="three.min.js?v=9274bbcec8d9"></script>
 <script src="редактор-зон-модель.js?v=1"></script>
-<script src="редактор-зон.js?v=1"></script>''')
+<script src="редактор-зон.js?v=2"></script>''')
 replace('var camera = new THREE.PerspectiveCamera(32, 1, 1, 8000);','''var camera = new THREE.PerspectiveCamera(32, 1, 1, 8000);
   var perspectiveCamera = camera, zoneCamera = new THREE.OrthographicCamera(-100,100,100,-100,1,8000), zoneMode=false, zoneSpan=Р;
 '''.replace('zoneSpan=Р','zoneSpan=300'))

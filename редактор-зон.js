@@ -49,7 +49,7 @@ window.startZoneEditor=function(api,bridge,data){
   $('z-add').textContent=drawing?'Отменить прямоугольник':'Новый прямоугольник';
   $('z-add').setAttribute('aria-pressed',String(drawing));
  }
- function project(x,y){const v=new THREE.Vector3(x,y,0).project(api.сцена().камера);return {x:(v.x+1)*c.clientWidth/2,y:(1-v.y)*c.clientHeight/2};}
+ function project(x,y){const v=new THREE.Vector3(x,y,0).project(api.сцена().камера),b=c.getBoundingClientRect();return {x:(v.x+1)*b.width/2,y:(1-v.y)*b.height/2};}
  function world(x,y){
   const b=c.getBoundingClientRect(), v=new THREE.Vector3((x-b.left)/b.width*2-1,-(y-b.top)/b.height*2+1,-1), camera=api.сцена().камера;
   v.unproject(camera);const dir=new THREE.Vector3(0,0,-1).transformDirection(camera.matrixWorld);
@@ -59,7 +59,7 @@ window.startZoneEditor=function(api,bridge,data){
  function element(name,attrs){const e=document.createElementNS(NS,name);Object.entries(attrs).forEach(([k,v])=>e.setAttribute(k,v));svg.appendChild(e);return e;}
  const matrix=new THREE.Matrix4(),proj=new THREE.Matrix4();let width=-1,height=-1;
  function frame(){
-  const cam=api.сцена().камера,w=c.clientWidth,h=c.clientHeight;
+  const cam=api.сцена().камера,bounds=c.getBoundingClientRect(),w=bounds.width,h=bounds.height;
   if(!dirty&&width===w&&height===h&&matrix.equals(cam.matrixWorld)&&proj.equals(cam.projectionMatrix))return;
   width=w;height=h;matrix.copy(cam.matrixWorld);proj.copy(cam.projectionMatrix);dirty=false;updates++;
   svg.setAttribute('viewBox','0 0 '+w+' '+h);svg.replaceChildren();svg.style.display=editing?'block':'none';if(!editing)return;

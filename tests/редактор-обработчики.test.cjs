@@ -27,6 +27,18 @@ function setup(){
  return {e,$,event,key,storage,getFile:()=>file};
 }
 const rect={x0:100,x1:300,y0:700,y1:900};
+test('Дробный размер холста не сдвигает координаты рисования и выбора',()=>{
+ const {e,$,event}=setup(),c=$('c');
+ c.getBoundingClientRect=()=>({left:17.25,top:9.5,width:1000.625,height:999.375});
+ const a=e.экран(100,700),b=e.экран(300,900);
+ const world=e.координаты(a.x+17.25,a.y+9.5);
+ assert.ok(Math.abs(world.x-100)<1e-8,JSON.stringify(world));
+ assert.ok(Math.abs(world.y-700)<1e-8,JSON.stringify(world));
+ $('z-add').click();event('pointerdown',a.x+17.25,a.y+9.5);
+ event('pointermove',b.x+17.25,b.y+9.5);event('pointerup',b.x+17.25,b.y+9.5);
+ const r=e.данные().зоны[0];
+ for(const k of ['x0','x1','y0','y1'])assert.ok(Math.abs(r[k]-rect[k])<1e-8,k+': '+r[k]);
+});
 test('Отклонённое создание не стирает историю повторения',()=>{
  const {e,$}=setup();e.добавить(rect);e.добавить(rect);$('z-undo').click();
  assert.throws(()=>e.добавить({...rect,x0:NaN}));assert.equal($('z-redo').disabled,false);
