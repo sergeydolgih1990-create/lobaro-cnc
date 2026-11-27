@@ -260,6 +260,7 @@
   // размеры и автоповорот выключены (Сергей, 27.09.2026)
   var ГАЛКИ = { t_ahead: true, t_pathall: false, t_wood: true, t_entry: true, t_air: true, t_rapid: true, t_colors: true,
                t_follow: false, t_auto: true, t_ghost: false, t_bolts: true, t_dims: false, t_spin: false };
+  if (Д["просмотр_движения"]) { ГАЛКИ.t_ahead = false; ГАЛКИ.t_follow = true; }
   Object.keys(ГАЛКИ).forEach(function (id) { $(id).checked = ГАЛКИ[id]; });
 
   var ЕСТЬ_ЦЕЛЬ = !!Д["цель"];
@@ -304,6 +305,9 @@
       p.P = P; p.K = new Uint8Array(r[1]); p.F = new Float32Array(r[2]); p.L = new Uint32Array(r[3]);
       p.text = new TextDecoder("latin1").decode(r[4]).split(/\r?\n/);
       var n = p.K.length, D = new Float32Array(n), T = new Float64Array(n + 1);
+      if (Д["просмотр_движения"] && (P.length !== 3 * (n + 1) || p.F.length !== n || p.L.length !== n)) {
+        throw new Error("Несогласованное число точек и отрезков: " + p["имя"]);
+      }
       for (var s = 0; s < n; s++) {
         var a = 3 * s, len = Math.hypot(P[a + 3] - P[a], P[a + 4] - P[a + 1], P[a + 5] - P[a + 2]);
         D[s] = len / (p.K[s] === 0 ? RAPID : Math.max(p.F[s], 1)) * 60;
@@ -846,7 +850,7 @@
   // колесо — масштаб к курсору; двойной щелчок
   // или двойное касание — точка в центр; два пальца — масштаб и сдвиг; щелчок левой кнопкой (мышь не сдвинулась) —
   // пауза / дальше, как кнопка ▶ (Сергей, 24.10.2026); в конце программы щелчок с начала не запускает
-  var азимут = -2.2, высота = 0.62, дистанция = Р * 1.25, сдвиг = new THREE.Vector3(), цель = new THREE.Vector3();
+  var азимут = -2.2, высота = 0.62, дистанция = Д["просмотр_движения"] ? 110 : Р * 1.25, сдвиг = new THREE.Vector3(), цель = new THREE.Vector3();
   var РАКУРСЫ = { "34": [-2.2, 0.62, Р * 1.25], "top": [-Math.PI / 2, 1.55, Р * 1.35], "side": [-Math.PI / 2, 0.1, Р * 1.3],
                  "end": [Math.PI, 0.25, Р * 1.1], "tool": [-2.3, 0.55, 70] };
   // после перехода к строке или заходу: вид сдвигается к фрезе, только если она у края экрана или за ним
