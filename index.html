@@ -55,6 +55,7 @@
   .bar #speed { flex: 0 1 120px; min-width: 80px; }
   .verdict { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 13px; padding: 2px 8px; border-radius: 2px;
              border: 1px solid var(--line); background: var(--panel); color: var(--ink); }
+  .verdict.archived { border-color: var(--bad); color: var(--bad); font-weight: 600; }
   .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
   .row .label { font-size: 13px; color: var(--muted); margin-right: 2px; min-width: 76px; }
   button, select, input[type=number] {
@@ -113,6 +114,24 @@
                               .main { height: calc(100dvh - 24px - var(--шапка, 120px)); } .side { overflow: visible; } }
   @media (max-width: 640px) { .gcode { display: none; }
                               .toolinfo { font-size: 11px; left: 8px; right: 8px; top: 8px; text-align: left; } }
+  button:disabled { opacity:.45; cursor:default; }
+  .zones-overlay { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; overflow:hidden; }
+  .zones-overlay .zone { fill:none; stroke:#10181b; stroke-width:2; stroke-dasharray:7 4; }
+  .zones-overlay .zone.selected { stroke:var(--accent); stroke-width:3; stroke-dasharray:none; }
+  .zone-label-bg { fill:var(--panel); stroke:var(--line); }
+  .zone-label { fill:var(--ink); font:600 13px "IBM Plex Sans",system-ui,sans-serif; }
+  .zone-handle { fill:var(--panel); stroke:var(--accent); stroke-width:2; }
+  #z-list { display:flex; flex-direction:column; gap:4px; max-height:180px; overflow-y:auto; }
+  #z-list .z-item { text-align:left; font-size:12px; padding:5px 7px; overflow-wrap:anywhere; }
+  #z-fields { display:flex; flex-direction:column; gap:6px; }
+  .z-coordinates { display:grid; grid-template-columns:1fr 1fr; gap:6px; }
+  .z-coordinates label { font-size:12px; display:flex; flex-direction:column; }
+  .z-coordinates input { width:100%; min-width:0; box-sizing:border-box; padding:4px; }
+  #z-note { width:100%; min-height:56px; box-sizing:border-box; resize:vertical; font:inherit; font-size:13px; border:1px solid var(--line); background:var(--panel); color:var(--ink); }
+  #z-group { border-bottom:1px solid var(--line); padding-bottom:12px; }
+  #z-group .row { gap:5px; }
+  .zones-active .gcode,.zones-active .toolinfo { display:none; }
+  #z-status { min-height:2.7em; }
 </style>
 
 <div class="app">
@@ -120,6 +139,7 @@
     <div class="titlebar">
       <h1 id="t-h1">Программы станка</h1>
       <span class="verdict" id="t-verdict"></span>
+      <a id="s_reset" href="./" hidden>Открыть каталог</a>
       <div class="row sets" id="sets" role="group" aria-label="Комплект" hidden>
         <select id="s_item" aria-label="Изделие"></select>
         <select id="s_setup" aria-label="Установка"></select>
@@ -155,6 +175,24 @@
   </main>
 
   <aside class="side">
+    <section class="group" id="z-group" aria-label="Разметка зон">
+      <span class="label">Разметка зон</span>
+      <div class="row"><button type="button" id="z-edit" aria-pressed="false">Разметить зоны</button><button type="button" id="z-add" aria-pressed="false" disabled>Новый прямоугольник</button></div>
+      <div class="row"><button type="button" id="z-undo" disabled>Отменить</button><button type="button" id="z-redo" disabled>Повторить</button><button type="button" id="z-delete" disabled>Удалить зону</button></div>
+      <p class="note" id="z-summary"></p>
+      <div id="z-list"></div>
+      <div id="z-fields" hidden>
+        <b id="z-number"></b>
+        <div class="z-coordinates">
+          <label>X от, мм<input id="z-x0" type="number" step="0.01"></label><label>X до, мм<input id="z-x1" type="number" step="0.01"></label>
+          <label>Y от, мм<input id="z-y0" type="number" step="0.01"></label><label>Y до, мм<input id="z-y1" type="number" step="0.01"></label>
+        </div>
+        <label for="z-note">Комментарий</label><textarea id="z-note" maxlength="2000"></textarea>
+        <button type="button" id="z-apply">Применить координаты и комментарий</button>
+      </div>
+      <div class="row"><button type="button" id="z-save">Сохранить карту</button><button type="button" id="z-load">Загрузить карту</button><input id="z-file" type="file" accept=".json,application/json" hidden></div>
+      <p class="note" id="z-status" role="status" aria-live="polite"></p>
+    </section>
     <div class="group" role="group" aria-label="Переход к строке">
       <span class="label">Строка и заходы</span>
       <div class="row">
@@ -202,6 +240,8 @@
 </div>
 
 <script src="three.min.js?v=9274bbcec8d9"></script>
+<script src="редактор-зон-модель.js?v=eb541009b31b"></script>
+<script src="редактор-зон.js?v=73f1a06592b1"></script>
 <script>
 (function () {
   "use strict";
@@ -226,12 +266,25 @@
     if (!все.length) { $("note").textContent = "На сайте пока нет ни одного комплекта."; return; }
     все.sort(function (a, b) { return a["время"] < b["время"] ? 1 : -1; });       // новые сверху
     var пар = new URLSearchParams(location.search);
-    var выбор = все.filter(function (v) {
+    var совпадает = function (v) {
       return (!пар.get("изделие") || v["изделие"] === пар.get("изделие")) && (!пар.get("установка") || v["установка"] === пар.get("установка")) &&
              (!пар.get("версия") || v["версия"] === пар.get("версия"));
-    })[0] || все[0];
+    };
+    var выбор = все.filter(совпадает)[0], архивная = false;
+    if (!выбор && пар.get("изделие") && пар.get("установка") && пар.get("версия")) {
+      var архив = (кат["архивные_версии"] || []).filter(совпадает);
+      if (архив.length === 1) { выбор = архив[0]; архивная = true; }
+    }
+    if (!выбор) {
+      $("t-h1").textContent = "Указанный комплект или версия не найдены";
+      $("t-verdict").textContent = "Другая программа не открыта";
+      $("note").textContent = "Запрошенной версии нет в каталоге. Проверьте ссылку или выберите другой комплект.";
+      $("s_reset").hidden = false;
+      return;
+    }
     var изделия = [], установки = [], версии = [];
-    все.forEach(function (v) {
+    var доступные = архивная ? [выбор].concat(все) : все;
+    доступные.forEach(function (v) {
       if (изделия.indexOf(v["изделие"]) < 0) изделия.push(v["изделие"]);
       if (v["изделие"] === выбор["изделие"] && установки.indexOf(v["установка"]) < 0) установки.push(v["установка"]);
       if (v["изделие"] === выбор["изделие"] && v["установка"] === выбор["установка"]) версии.push(v);
@@ -239,8 +292,8 @@
     заполнить($("s_item"), изделия, null, выбор["изделие"]);
     заполнить($("s_setup"), установки, null, выбор["установка"]);
     заполнить($("s_ver"), версии.map(function (v) { return v["версия"]; }),
-              версии.map(function (v) { return v["подпись"] + " · " + v["вердикт"]; }), выбор["версия"]);
-    if (выбор["чек_лист"]) { $("s_check").href = выбор["чек_лист"]; $("s_check").hidden = false; }
+              версии.map(function (v) { return (архивная && v === выбор ? "АРХИВ · НЕ ЗАПУСКАТЬ · " : "") + v["подпись"] + " · " + v["вердикт"]; }), выбор["версия"]);
+    if (выбор["чек_лист"] && !архивная) { $("s_check").href = выбор["чек_лист"]; $("s_check").hidden = false; }
     $("sets").hidden = false;
     function перейти(изд, уст, вер) {
       var q = new URLSearchParams(); q.set("изделие", изд); if (уст) q.set("установка", уст); if (вер) q.set("версия", вер);
@@ -250,10 +303,10 @@
     $("s_setup").addEventListener("change", function () { перейти(выбор["изделие"], $("s_setup").value); });
     $("s_ver").addEventListener("change", function () { перейти(выбор["изделие"], выбор["установка"], $("s_ver").value); });
     if (!пар.get("изделие")) history.replaceState(null, "", "?" + new URLSearchParams({ "изделие": выбор["изделие"], "установка": выбор["установка"], "версия": выбор["версия"] }).toString());
-    return fetch(выбор["файл"] + "?v=" + выбор["хеш"]).then(function (r) { return r.json(); }).then(запуск);
+    return fetch(выбор["файл"] + "?v=" + выбор["хеш"]).then(function (r) { return r.json(); }).then(function (Д) { запуск(Д, архивная); });
   }).catch(function (e) { $("note").textContent = "Каталог или данные не загрузились: " + e; });
 
-  function запуск(Д) {
+  function запуск(Д, архивная) {
   if (!Д || !window.THREE) { $("note").textContent = "Данные или three.js не загрузились."; return; }
 
   // галочки при каждом открытии и обновлении — как задумано, а не как запомнил браузер;
@@ -269,7 +322,9 @@
   function экр(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
   document.title = "Смотрелка программ — " + (Д["изделие"] || "").split(",")[0];
   $("t-h1").textContent = "Программы станка — " + (Д["изделие"] || "");
-  $("t-verdict").textContent = "проверка: " + (Д["вердикт"] || "нет") + (Д["дата_проверки"] ? " · " + Д["дата_проверки"] : "");
+  $("t-verdict").textContent = архивная ? "АРХИВНАЯ ВЕРСИЯ — НЕ ЗАПУСКАТЬ" :
+    "проверка: " + (Д["вердикт"] || "нет") + (Д["дата_проверки"] ? " · " + Д["дата_проверки"] : "");
+  $("t-verdict").classList.toggle("archived", !!архивная);
   $("t-lead").innerHTML = "Программы по порядку запуска, каждая — на том, что сняли предыдущие" +
     (Д["до_программ"].length ? " (и до них: " + экр(Д["до_программ"].join(", ")) + ")" : "") + "." +
     (ЕСТЬ_ЦЕЛЬ ? " Цвет — сколько осталось до " + экр(Д["цель_имя"]) + "." : "");
@@ -424,6 +479,7 @@
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   var scene = new THREE.Scene();
   var camera = new THREE.PerspectiveCamera(32, 1, 1, 8000);
+  var perspectiveCamera = camera, zoneCamera = new THREE.OrthographicCamera(-100,100,100,-100,1,8000), zoneMode=false, zoneSpan=300;
   scene.add(new THREE.HemisphereLight(0xffffff, 0x9aa7ab, 0.65));
   var key = new THREE.DirectionalLight(0xffffff, 0.85); key.position.set(-200, -300, 450); scene.add(key);
   var fill = new THREE.DirectionalLight(0xffffff, 0.4); fill.position.set(300, -100, 200); scene.add(fill);
@@ -999,10 +1055,16 @@
     var w = canvas.clientWidth, h = canvas.clientHeight;
     if (!w || !h) return;
     if (canvas.width !== Math.round(w * renderer.getPixelRatio()) || canvas.height !== Math.round(h * renderer.getPixelRatio())) {
-      renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix();
+      renderer.setSize(w, h, false); perspectiveCamera.aspect = w / h; perspectiveCamera.updateProjectionMatrix();
     }
   }
   function place() {
+    if(zoneMode){
+      var aspect=(canvas.clientWidth||1)/(canvas.clientHeight||1),half=zoneSpan/2;
+      camera=zoneCamera; camera.left=-half*aspect;camera.right=half*aspect;camera.top=half;camera.bottom=-half;
+      camera.updateProjectionMatrix();цель.set(ЦЕНТР[0]+сдвиг.x,ЦЕНТР[1]+сдвиг.y,0);
+      camera.position.set(цель.x,цель.y,2000);camera.up.set(0,1,0);camera.lookAt(цель);camera.updateMatrixWorld();return;
+    }
     if ($("t_follow").checked) цель.copy(tool.position).add(сдвиг);
     else цель.set(ЦЕНТР[0], ЦЕНТР[1], ЦЕНТР[2]).add(сдвиг);
     var дист = дистанция * Math.max(1, 1.3 / camera.aspect);
@@ -1010,7 +1072,7 @@
                         цель.z + дист * Math.sin(высота));
     camera.up.set(0, 0, 1); camera.lookAt(цель); camera.updateMatrixWorld();
   }
-  function кадр() { resize(); place(); xyProject(); выгрузить(); renderer.render(scene, camera); }
+  function кадр() { resize(); place(); xyProject(); выгрузить(); renderer.render(scene, camera); if(window.РЕДАКТОР)window.РЕДАКТОР.кадр(); }
 
   var last = null;
   function tick(now) {
@@ -1067,6 +1129,19 @@
     if (ЕСТЬ_ЦЕЛЬ) { THI = r[offset++]; TLO = r[offset++]; }
     progs.forEach(function (p) { всегоЦепочки += p.total; });
     buildBlank(); buildLegend(); buildProgButtons();
+    window.startZoneEditor(window.СМОТРЕЛКА,{
+      enable:function(){
+        var old={a:азимут,h:высота,d:дистанция,shift:сдвиг.clone(),spin:$("t_spin").checked,follow:$("t_follow").checked};
+        playing=false;$("b_play").textContent="▶";$("t_spin").checked=false;$("t_follow").checked=false;
+        ["t_spin","t_follow","b_play"].forEach(function(id){$(id).disabled=true;});
+        document.body.classList.add('zones-active');zoneMode=true;camera=zoneCamera;zoneSpan=Math.max((NY*RES)*1.12,(NX*RES)*1.12/((canvas.clientWidth||1)/(canvas.clientHeight||1)));
+        сдвиг.set(GX0+NX*RES/2-ЦЕНТР[0],GY0+NY*RES/2-ЦЕНТР[1],0);кадр();return old;
+      },
+      disable:function(old){zoneMode=false;camera=perspectiveCamera;document.body.classList.remove('zones-active');
+        if(old){азимут=old.a;высота=old.h;дистанция=old.d;сдвиг.copy(old.shift);$("t_spin").checked=old.spin;$("t_follow").checked=old.follow;}
+        ["t_spin","t_follow","b_play"].forEach(function(id){$(id).disabled=false;});canvas.style.cursor='';кадр();},
+      pan:function(x,y){сдвиг.x+=x;сдвиг.y+=y;},zoom:function(k){zoneSpan=Math.max(2,Math.min(8000,zoneSpan*k));},frame:кадр
+    },Д);
     selectProg(0, true);
     requestAnimationFrame(tick);
   }).catch(function (e) { $("note").textContent = "Не распаковалось: " + e; busy(false); });

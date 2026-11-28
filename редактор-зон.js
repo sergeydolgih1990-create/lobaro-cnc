@@ -1,9 +1,11 @@
-/* Test-only adapter. Rendering and material removal stay in the incumbent viewer. */
+/* Редактор зон использует сцену и данные общей смотрелки; съём не изменяет. */
 (function(){
 'use strict';
 window.startZoneEditor=function(api,bridge,data){
  const $=id=>document.getElementById(id), c=$('c'), stage=c.parentNode;
- const source={изделие:$('s_item').value,установка:$('s_setup').value,версия:$('s_ver').value};
+ const chosen={изделие:$('s_item').value,установка:$('s_setup').value,версия:$('s_ver').value};
+ const source=Object.values(chosen).every(Boolean)?chosen:data.источник_разметки;
+ if(!source||!['изделие','установка','версия'].every(k=>typeof source[k]==='string'&&source[k]))throw Error('Не указан источник карты зон');
  const key='lobaro-zones-v1:'+JSON.stringify(source), bounds=data.сетка;
  let model=ZoneModel.create(), selected=null, editing=false, drawing=false, drag=null, revision=0, mapId=crypto.randomUUID(), savedView=null, dirty=true;
  let history=[],future=[], updates=0;
@@ -17,8 +19,8 @@ window.startZoneEditor=function(api,bridge,data){
  function restore(s){cancelGesture();const current=model.snapshot();model=ZoneModel.create({...s.model,maxId:Math.max(current.maxId,s.model.maxId)});mapId=s.mapId;revision=Math.max(revision,s.revision)+1;selected=null;}
  function exported(){
   const s=api.состояние();
-  return {формат:'lobaro-zones-v1',карта:mapId,редакция:revision,сохранено:new Date().toISOString(),источник:source,
-   состояние:{программа:s.программа,строка:s.строка,секунды:s.t},сетка:bounds,единицы:'мм',плоскость:'XY',
+  return {формат:'lobaro-zones-v1',карта:mapId,редакция:revision,сохранено:new Date().toISOString(),источник:{...source},
+   состояние:{программа:s.программа,строка:s.строка,секунды:s.t},сетка:{...bounds},единицы:'мм',плоскость:'XY',
    maxId:model.snapshot().maxId,зоны:model.snapshot().rects.map(r=>({номер:r.id,x0:r.x0,x1:r.x1,y0:r.y0,y1:r.y1,комментарий:r.note})),
    назначение:'Разметка для обсуждения; не станочная программа и не разрешение запуска'};
  }
