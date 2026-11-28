@@ -528,50 +528,114 @@
   var geo = new THREE.BufferGeometry(), pos = new Float32Array(N * 3), col = new Float32Array(N * 3);
   var posAttr, colAttr, blankMesh;
   var intervalMesh = null, intervalGeometry = null, intervalStep = 2;
+  var intervalLive, intervalFaces, intervalColors, intervalDraw;
+  function intervalAttr(array, size) {
+    var attr = new THREE.BufferAttribute(array, size).setUsage(THREE.DynamicDrawUsage);
+    // При первой загрузке Three.js передаёт весь буфер; далее он сам сбрасывает диапазон.
+    attr.onUploadCallback = function () { attr.updateRange.count = -1; };
+    return attr;
+  }
+  function intervalUpload(attr, from, to) {
+    var range = attr.updateRange;
+    // До отрисовки возможны несколько перемоток или скрытая заготовка.
+    if (range.count >= 0) { to = Math.max(to, range.offset + range.count); from = Math.min(from, range.offset); }
+    range.offset = from; range.count = to - from; attr.needsUpdate = true;
+  }
+  function intervalSample(i, n) { return Math.min(n - 1, i * intervalStep); }
+  function intervalFirst(i, n, verts) { return i === n - 1 ? verts - 1 : Math.ceil(i / intervalStep); }
+  function intervalLast(i, n, verts) { return i === n - 1 ? verts - 1 : Math.floor(i / intervalStep); }
   function buildIntervalBlank() {
     var step = intervalStep, cols = Math.ceil((NX - 1) / step) + 1, rows = Math.ceil((NY - 1) / step) + 1;
     var count = cols * rows, positions = new Float32Array(count * 6), colors = new Float32Array(count * 6);
+    intervalLive = new Uint8Array(count);
+    intervalFaces = new Uint8Array((cols - 1) * (rows - 1));
+    intervalColors = null;
+    for (var j = 0; j < rows; j++) for (var i = 0; i < cols; i++) {
+      var sx = intervalSample(i, NX), sy = intervalSample(j, NY), k = sy * NX + sx, v = j * cols + i;
+      var top = 3 * v, bottom = 3 * (v + count);
+      positions[top] = positions[bottom] = cx(sx); positions[top + 1] = positions[bottom + 1] = cy(sy);
+      positions[top + 2] = positions[bottom + 2] = isFinite(LOWER[k]) ? LOWER[k] : 0;
+      for (var a = 0; a < 3; a++) colors[bottom + a] = C.wood[a] * 0.85;
+    }
     intervalGeometry = new THREE.BufferGeometry();
-    intervalGeometry.setAttribute("position", new THREE.BufferAttribute(positions, 3).setUsage(THREE.DynamicDrawUsage));
-    intervalGeometry.setAttribute("color", new THREE.BufferAttribute(colors, 3).setUsage(THREE.DynamicDrawUsage));
+    intervalGeometry.setAttribute("position", intervalAttr(positions, 3));
+    intervalGeometry.setAttribute("color", intervalAttr(colors, 3));
+    intervalDraw = intervalAttr(new Uint32Array(0), 1);
+    intervalGeometry.setIndex(intervalDraw); intervalGeometry.setDrawRange(0, 0);
+    // При flatShading нормаль грани вычисляет шейдер, а не процессор.
     intervalMesh = new THREE.Mesh(intervalGeometry, new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, side: THREE.DoubleSide, roughness: 0.85 }));
     intervalMesh.frustumCulled = false;
-    intervalMesh.userData = { cols: cols, rows: rows, count: count, lower_surface: true, render_step_mm: RES * step };
+    intervalMesh.userData = { cols: cols, rows: rows, count: count, lower_surface: true, render_step_mm: RES * step, triangles: 0 };
     scene.add(intervalMesh); blankMesh = intervalMesh;
+  }
+  function rebuildIntervalIndex(info) {
+    var cols = info.cols, w = cols - 1, h = info.rows - 1, count = info.count, faces = intervalFaces;
+    var length = 0;
+    for (var y = 0, f = 0; y < h; y++) for (var x = 0; x < w; x++, f++) if (faces[f] & 1) {
+      // Бит 0 — верх и низ, остальные биты — открытые боковые стенки.
+      var mask = 1;
+      length += 12;
+      if (y === 0 || !(faces[f-w] & 1)) { mask |= 2; length += 6; }
+      if (y === h-1 || !(faces[f+w] & 1)) { mask |= 4; length += 6; }
+      if (x === 0 || !(faces[f-1] & 1)) { mask |= 8; length += 6; }
+      if (x === w-1 || !(faces[f+1] & 1)) { mask |= 16; length += 6; }
+      faces[f] = mask;
+    }
+    if (length > intervalDraw.array.length) {
+      var capacity = Math.max(length, Math.ceil(intervalDraw.array.length * 1.25));
+      var next = intervalAttr(new Uint32Array(capacity), 1);
+      // Освобождаем старый GPU-буфер до установки нового, не меняя объект сетки.
+      intervalGeometry.dispose(); intervalGeometry.setIndex(next); intervalDraw = next;
+    }
+    var idx = intervalDraw.array, q = 0;
+    function wall(a, b) { idx[q++]=a; idx[q++]=b; idx[q++]=b+count; idx[q++]=a; idx[q++]=b+count; idx[q++]=a+count; }
+    for (var y = 0, f = 0; y < h; y++) for (var x = 0; x < w; x++, f++) {
+      var mask = faces[f];
+      if (!mask) continue;
+      var a=y*cols+x,b=a+1,d=a+cols,e=d+1;
+      idx[q++]=a; idx[q++]=b; idx[q++]=e; idx[q++]=a; idx[q++]=e; idx[q++]=d;
+      idx[q++]=a+count; idx[q++]=e+count; idx[q++]=b+count; idx[q++]=a+count; idx[q++]=d+count; idx[q++]=e+count;
+      if (mask & 2) wall(b,a); if (mask & 4) wall(d,e); if (mask & 8) wall(a,d); if (mask & 16) wall(e,b);
+    }
+    if (q) intervalUpload(intervalDraw, 0, q);
+    intervalGeometry.setDrawRange(0, q); info.triangles = q / 3;
   }
   function refreshIntervalBlank() {
     if (!intervalMesh || !H) return;
     var info = intervalMesh.userData, cols = info.cols, rows = info.rows, count = info.count;
-    var pp = intervalGeometry.attributes.position.array, cc = intervalGeometry.attributes.color.array;
-    var live = new Uint8Array(count), faces = new Uint8Array((cols - 1) * (rows - 1)), indices = [];
-    var colors = ЕСТЬ_ЦЕЛЬ && $("t_colors").checked;
-    for (var j = 0; j < rows; j++) for (var i = 0; i < cols; i++) {
-      var sx = Math.min(NX - 1, i * intervalStep), sy = Math.min(NY - 1, j * intervalStep), k = sy * NX + sx, v = j * cols + i;
-      live[v] = intervalPresent(k, H) ? 1 : 0;
-      var lo = isFinite(LOWER[k]) ? LOWER[k] : 0, hi = live[v] ? H[k] : lo;
-      pp[3*v] = pp[3*(v+count)] = cx(sx); pp[3*v+1] = pp[3*(v+count)+1] = cy(sy);
-      pp[3*v+2] = hi; pp[3*(v+count)+2] = lo;
-      var color = colors && live[v] ? colorFor(hi, THI[k], TLO[k]) : C.wood;
-      for (var a = 0; a < 3; a++) { cc[3*v+a] = color[a]; cc[3*(v+count)+a] = C.wood[a] * 0.85; }
+    var position = intervalGeometry.attributes.position, colorAttr = intervalGeometry.attributes.color;
+    var pp = position.array, cc = colorAttr.array;
+    var colors = ЕСТЬ_ЦЕЛЬ && $("t_colors").checked, recolor = colors !== intervalColors;
+    var i0 = recolor ? 0 : intervalFirst(dirty.i0, NX, cols), i1 = recolor ? cols-1 : intervalLast(dirty.i1, NX, cols);
+    var j0 = recolor ? 0 : intervalFirst(dirty.j0, NY, rows), j1 = recolor ? rows-1 : intervalLast(dirty.j1, NY, rows);
+    var p0 = count * 3, p1 = -1, c0 = p0, c1 = -1;
+    var x0 = cols, x1 = -1, y0 = rows, y1 = -1;
+    intervalColors = colors;
+    for (var j = j0; j <= j1; j++) for (var i = i0; i <= i1; i++) {
+      var sx = intervalSample(i, NX), sy = intervalSample(j, NY), k = sy * NX + sx, v = j * cols + i;
+      var live = intervalPresent(k, H) ? 1 : 0, at = 3 * v;
+      var hi = live ? H[k] : pp[3*(v+count)+2], moved = pp[at + 2] !== hi;
+      if (moved) { pp[at + 2] = hi; p0 = Math.min(p0, at + 2); p1 = at + 2; }
+      if (moved || recolor || live !== intervalLive[v]) {
+        var color = colors && live ? colorFor(hi, THI[k], TLO[k]) : C.wood;
+        for (var a = 0; a < 3; a++) cc[at+a] = color[a];
+        c0 = Math.min(c0, at); c1 = at + 2;
+      }
+      if (live !== intervalLive[v]) {
+        intervalLive[v] = live;
+        x0 = Math.min(x0, i); x1 = Math.max(x1, i); y0 = Math.min(y0, j); y1 = j;
+      }
     }
-    function wall(a, b) { indices.push(a,b,b+count,a,b+count,a+count); }
-    for (var y = 0; y < rows-1; y++) for (var x = 0; x < cols-1; x++) {
-      var a0 = y*cols+x, a1=a0+1, a2=a0+cols, a3=a2+1;
-      if (live[a0] && live[a1] && live[a2] && live[a3]) faces[y*(cols-1)+x] = 1;
+    if (p1 >= p0) intervalUpload(position, p0, p1 + 1);
+    if (c1 >= c0) intervalUpload(colorAttr, c0, c1 + 1);
+    if (x1 < 0) return;
+    var topologyChanged = false, w = cols - 1;
+    for (var y = Math.max(0,y0-1); y <= Math.min(rows-2,y1); y++) for (var x = Math.max(0,x0-1); x <= Math.min(cols-2,x1); x++) {
+      var a0=y*cols+x, f=y*w+x;
+      var alive=intervalLive[a0] & intervalLive[a0+1] & intervalLive[a0+cols] & intervalLive[a0+cols+1];
+      if ((intervalFaces[f] & 1) !== alive) { intervalFaces[f] = alive; topologyChanged = true; }
     }
-    for (var y = 0; y < rows-1; y++) for (var x = 0; x < cols-1; x++) {
-      if (!faces[y*(cols-1)+x]) continue;
-      var a0=y*cols+x,a1=a0+1,a2=a0+cols,a3=a2+1;
-      indices.push(a0,a1,a3,a0,a3,a2,a0+count,a3+count,a1+count,a0+count,a2+count,a3+count);
-      if (y===0 || !faces[(y-1)*(cols-1)+x]) wall(a1,a0);
-      if (y===rows-2 || !faces[(y+1)*(cols-1)+x]) wall(a2,a3);
-      if (x===0 || !faces[y*(cols-1)+x-1]) wall(a0,a2);
-      if (x===cols-2 || !faces[y*(cols-1)+x+1]) wall(a3,a1);
-    }
-    intervalGeometry.setIndex(new THREE.BufferAttribute(new Uint32Array(indices),1));
-    intervalGeometry.attributes.position.needsUpdate=true; intervalGeometry.attributes.color.needsUpdate=true;
-    intervalGeometry.computeVertexNormals();
-    info.triangles=indices.length/3;
+    if (topologyChanged) rebuildIntervalIndex(info);
   }
   function buildBlank() {
     if (LOWER) { buildIntervalBlank(); return; }
